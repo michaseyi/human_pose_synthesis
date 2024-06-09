@@ -1,6 +1,6 @@
 
 from typing import Dict, Optional, List
-from custom_types import Vec3
+from utils.custom_types import Vec3
 
 
 class Bone:

@@ -1,7 +1,7 @@
 
 from typing import Optional
 from enum import Enum
-from skeleton import Skeleton, Bone
+from utils.skeleton import Skeleton, Bone
 
 
 class Section(Enum):

@@ -1,5 +1,5 @@
-from asf_parser import parse_asf
-from plot_skeleton import plot_skeleton
+from utils.asf_parser import parse_asf
+from utils.plot_skeleton import plot_skeleton
 
 
 def main():

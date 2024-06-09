@@ -1,6 +1,6 @@
-from skeleton import Skeleton, Bone
+from utils.skeleton import Skeleton, Bone
 from typing import List, Optional
-from custom_types import Vec3
+from utils.custom_types import Vec3
 
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
