@@ -2,6 +2,8 @@
 from typing import Optional
 from enum import Enum
 from utils.skeleton import Skeleton, Bone
+from transforms3d.euler import euler2mat
+import numpy as np
 
 
 class Section(Enum):
@@ -96,12 +98,19 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
 
         case "axis":
             assert current_bone is not None
-            current_bone.orientation = (float(line_tokens[1]), float(
-                line_tokens[2]), float(line_tokens[3]))
+            axis = [float(token) for token in line_tokens[1:4]]
+
+            current_bone.bind_matrix = euler2mat(*np.deg2rad(axis))
+            current_bone.inverse_bind_matrix = np.linalg.inv(current_bone.bind_matrix)
 
         case "dof":
             assert current_bone is not None
-            current_bone.dof = line_tokens[1:]
+            dof_map = {
+                "rx": 0,
+                "ry": 1,
+                "rz": 2
+            }
+            current_bone.dof = [dof_map[token] for token in line_tokens[1:]]
 
         case "limits":
             pass

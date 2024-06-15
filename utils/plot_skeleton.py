@@ -14,55 +14,64 @@ def numpy_to_vec3(np_array: np.ndarray) -> Vec3:
 
 
 def orientation_to_matrix(orientation: Vec3) -> np.ndarray:
-    return euler2mat(*np.deg2rad(orientation))
+    rotation = euler2mat(*np.deg2rad(orientation))
+    return np.vstack([np.hstack([rotation, np.zeros((3, 1))]),
+                      np.array([0, 0, 0, 1])])
+
 
 
 def get_lines(skeleton: Skeleton) -> List[List[Vec3]]:
 
-    def get_lines_recursive(bone: Bone, lines: List[List[Vec3]]):
-        # apply transformation
-        parent_position = np.array(bone.position)
+    def get_lines_recursive(bone: Bone, lines: List[List[Vec3]], parent_transform: np.ndarray = np.eye(3), parent_tail: np.ndarray = np.array([0, 0, 0])):
+        head_position = parent_tail
 
-        assert parent_position is not None
+        assert bone.direction is not None
+
+        transform = parent_transform @ bone.bone_transform
+
+        direction = transform @ np.array(bone.direction)
+
+        tail_position = head_position + direction * bone.length
+
+        lines.append([numpy_to_vec3(head_position),
+                     numpy_to_vec3(tail_position)])
 
         for child in bone.children:
-            child_position = parent_position
-            assert child.direction is not None
-            assert child.orientation is not None
-
-            direction = np.array(child.direction)
-            orientation = orientation_to_matrix(child.orientation)
-
-            child_position = parent_position + \
-                (orientation @ (direction * child.length))
-
-            child.position = numpy_to_vec3(child_position)
-            lines.append([numpy_to_vec3(parent_position), child.position])
-
-            get_lines_recursive(child, lines)
+            get_lines_recursive(child, lines, transform, tail_position)
 
     lines: List[List[Vec3]] = []
-    assert skeleton.root is not None
-    get_lines_recursive(skeleton.root, lines)
+
+    assert skeleton.root is not None and skeleton.root.position is not None and skeleton.root.orientation is not None
+
+    root_transform = euler2mat(*np.deg2rad(skeleton.root.orientation))
+    root_position = np.array(skeleton.root.position)
+    for child in skeleton.root.children:
+        get_lines_recursive(child, lines, root_transform, root_position)
 
     return lines
 
 
-def plot_skeleton(skeleton: Skeleton, fig: Optional[Figure] = None):
-    if fig is None:
-        fig = plt.figure()
-
-    ax = fig.add_subplot(111, projection='3d')
+def plot_skeleton(skeleton: Skeleton, ax):
     assert isinstance(ax, Axes3D)
 
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
 
+    # ax.set_xlim3d(-20, 20)
+    # ax.set_ylim3d(-20, 20)
+    # ax.set_zlim3d(-20, 20)
+
+    ax.set_xlim3d(-50, 10)
+    ax.set_ylim3d(-20, 40)
+    ax.set_zlim3d(-20, 40)
+
     lines = get_lines(skeleton)
 
     for line in lines:
         xs, ys, zs = zip(*line)
-        ax.plot(xs, ys, zs)
+        ax.plot(zs, xs, ys, "r", linewidth=3)
 
-    plt.show()
+    for line in lines:
+        xs, ys, zs = zip(*line)
+        ax.plot(zs, xs, ys, "b." , markersize=5)
