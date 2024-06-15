@@ -2,3 +2,5 @@ __pycache__
 .vscode
 
 all_asfamc/subjects
+
+utils/__pycache__
