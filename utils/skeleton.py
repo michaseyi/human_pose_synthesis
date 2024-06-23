@@ -16,6 +16,8 @@ class Bone:
     bind_matrix: np.ndarray
     inverse_bind_matrix: np.ndarray
     bone_transform: np.ndarray
+    axis: Optional[Vec3]
+    limits: Optional[List[List[float]]]
 
     def __init__(self, name):
         self.name = name
@@ -25,6 +27,12 @@ class Bone:
         self.bind_matrix = np.eye(3)
         self.inverse_bind_matrix = np.eye(3)
         self.bone_transform = np.eye(3)
+        self.limits = None
+        self.direction = None
+        self.position = None
+        self.orientation = None
+        self.dof = []
+        self.axis = None
 
 
 class Skeleton:

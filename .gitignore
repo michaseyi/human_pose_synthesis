@@ -4,3 +4,4 @@ __pycache__
 all_asfamc/subjects
 
 utils/__pycache__
+amc_parser

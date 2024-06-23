@@ -83,6 +83,8 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
     match line_tokens[0]:
         case "begin":
             current_bone = Bone("")
+        case "id":
+            pass
         case "name":
             assert current_bone is not None
             current_bone.name = line_tokens[1]
@@ -99,9 +101,10 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
         case "axis":
             assert current_bone is not None
             axis = [float(token) for token in line_tokens[1:4]]
-
+            current_bone.axis = (axis[0], axis[1], axis[2])
             current_bone.bind_matrix = euler2mat(*np.deg2rad(axis))
-            current_bone.inverse_bind_matrix = np.linalg.inv(current_bone.bind_matrix)
+            current_bone.inverse_bind_matrix = np.linalg.inv(
+                current_bone.bind_matrix)
 
         case "dof":
             assert current_bone is not None
@@ -113,10 +116,23 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
             current_bone.dof = [dof_map[token] for token in line_tokens[1:]]
 
         case "limits":
-            pass
+            assert current_bone is not None
+            current_bone.limits = [
+                [float(token.strip("()")) for token in line_tokens[1:3]],
+            ]
 
         case "end":
             current_bone = None
+
+        case _:
+            assert current_bone is not None
+            assert current_bone.limits is not None
+
+            current_bone.limits.append(
+                [float(token.strip("()")) for token in line_tokens[:2]]
+            )
+
+            pass
     return current_bone
 
 
