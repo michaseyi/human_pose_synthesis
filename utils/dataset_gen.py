@@ -33,7 +33,7 @@ def generate_dataset(subjects_dir: str, block_size: int, frame_rate: int):
 
             motion_tensor = motion_frames_to_tensor(motion_data.frames)
 
-            idx = torch.randint(0, (len(motion_tensor) - (block_size + 2)), (max(1, (len(motion_tensor) // block_size) * 3),))
+            idx = torch.randint(0, (len(motion_tensor) - (block_size + 1)) + 1, (max(1, (len(motion_tensor) // block_size) * 3),))
 
             dataset.extend([motion_tensor[i: i + block_size + 1] for i in idx])
 
