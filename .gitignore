@@ -5,3 +5,6 @@ data/subjects
 
 utils/__pycache__
 viewer
+
+dataset.bin
+checkpoint.pth
