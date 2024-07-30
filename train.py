@@ -57,8 +57,7 @@ class Trainer:
             self.log_stat()
 
     def log_stat(self):
-        print(f"Epoch {
-              self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
+        print(f"Epoch {self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader):
