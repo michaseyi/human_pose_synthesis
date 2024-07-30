@@ -1,7 +1,7 @@
 __pycache__
 .vscode
 
-all_asfamc/subjects
+data/subjects
 
 utils/__pycache__
 amc_parser

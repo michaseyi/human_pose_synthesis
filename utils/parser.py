@@ -1,9 +1,36 @@
-
 from typing import Optional
 from enum import Enum
 from utils.skeleton import Skeleton, Bone
 from transforms3d.euler import euler2mat
 import numpy as np
+from utils.motion import MotionFrame, Motion
+
+
+
+def parse_motion_file(file_path: str) -> Motion:
+    with open(file_path, "r") as file:
+        current_motion_frame: Optional[MotionFrame] = None
+        motion = Motion()
+        for line in file.readlines():
+            line = line.strip()
+
+            if line.isnumeric():
+                if current_motion_frame is not None:
+                    motion.frames.append(current_motion_frame)
+                current_motion_frame = {}
+                continue
+
+            if current_motion_frame is not None:
+                tokens = line.split(" ")
+
+                assert len(tokens) > 1
+
+                current_motion_frame[tokens[0]] = [
+                    float(token) for token in tokens[1:]]
+
+        if current_motion_frame:
+            motion.frames.append(current_motion_frame)
+    return motion
 
 
 class Section(Enum):
@@ -49,12 +76,11 @@ def extract_root_data(line: str, skeleton: Skeleton):
 
     match line_tokens[0]:
         case "position":
-            skeleton.root.position = (float(line_tokens[1]), float(
-                line_tokens[2]), float(line_tokens[3]))
+            skeleton.root.position = [float(token)
+                                      for token in line_tokens[1:4]]
         case "orientation":
-            skeleton.root.orientation = (float(line_tokens[1]), float(
-                line_tokens[2]), float(line_tokens[3]))
-            pass
+            skeleton.root.orientation = [
+                float(token) for token in line_tokens[1:4]]
 
 
 def extract_heirarchy_data(line: str, skeleton: Skeleton):
@@ -91,9 +117,8 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
             skeleton.bone_map[current_bone.name] = current_bone
         case "direction":
             assert current_bone is not None
-            current_bone.direction = (float(line_tokens[1]), float(
-                line_tokens[2]), float(line_tokens[3]))
-
+            current_bone.direction = [float(token)
+                                      for token in line_tokens[1:4]]
         case "length":
             assert current_bone is not None
             current_bone.length = float(line_tokens[1])
@@ -101,7 +126,7 @@ def extract_bone_data(line: str, skeleton: Skeleton, current_bone: Optional[Bone
         case "axis":
             assert current_bone is not None
             axis = [float(token) for token in line_tokens[1:4]]
-            current_bone.axis = (axis[0], axis[1], axis[2])
+            current_bone.axis = axis
             current_bone.bind_matrix = euler2mat(*np.deg2rad(axis))
             current_bone.inverse_bind_matrix = np.linalg.inv(
                 current_bone.bind_matrix)
