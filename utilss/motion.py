@@ -1,5 +1,5 @@
 from typing import List, Dict
-from utils.skeleton import Skeleton
+from utilss.skeleton import Skeleton
 from matplotlib.axes import Axes
 
 MotionFrame = Dict[str, List[float]]

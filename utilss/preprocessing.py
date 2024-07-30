@@ -1,5 +1,5 @@
 import torch
-from utils.motion import MotionFrame
+from utilss.motion import MotionFrame
 from transforms3d.euler import euler2mat
 from data import bone_sequence, default_skeleton
 

@@ -1,9 +1,9 @@
 from typing import Optional
 from enum import Enum
-from utils.skeleton import Skeleton, Bone
+from utilss.skeleton import Skeleton, Bone
 from transforms3d.euler import euler2mat
 import numpy as np
-from utils.motion import MotionFrame, Motion
+from utilss.motion import MotionFrame, Motion
 
 
 
