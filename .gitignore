@@ -4,4 +4,4 @@ __pycache__
 data/subjects
 
 utils/__pycache__
-amc_parser
+viewer
