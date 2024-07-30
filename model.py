@@ -47,18 +47,18 @@ class PoseFlowModel(nn.Module):
         self.block_size = block_size
 
         self.pose_encoder = nn.Sequential(
-            nn.Linear(pose_embd, 50),
+            nn.Linear(pose_embd, 256),
             nn.GELU(),
-            nn.Linear(50, block_embd)
+            nn.Linear(256, block_embd)
         )
         self.position_embedding = nn.Embedding(block_size, block_embd)
         self.blocks = nn.Sequential(
             *[Block(block_embd, num_heads, dropout, device) for _ in range(num_layers)])
         self.ln_f = nn.LayerNorm(block_embd)
         self.lm_head = nn.Sequential(
-            nn.Linear(block_embd, 50),
+            nn.Linear(block_embd, 256),
             nn.GELU(),
-            nn.Linear(50, pose_embd)
+            nn.Linear(256, pose_embd)
         )
 
         self.apply(self._init_weights)
@@ -73,15 +73,13 @@ class PoseFlowModel(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, X):
-        B, T, C, D = X.shape
-        pose_emb = self.pose_encoder(X.view(B, T, C * D))
+        pose_emb = self.pose_encoder(X)
         pos_emb = self.position_embedding(
             torch.arange(X.shape[1], device=self.device))
         X = pose_emb + pos_emb
         X = X + self.blocks(X)
         X = self.ln_f(X)
         X = self.lm_head(X)
-        X = F.normalize(X.view(B, T, C, D), p=2, dim=-1)
         return X
 
     def stream(self, X):

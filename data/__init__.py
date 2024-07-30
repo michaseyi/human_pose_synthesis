@@ -38,7 +38,7 @@ bone_sequence = [
     "ltoes"
 ]
 
-default_skeleton = parse_asf("data/subjects/01/01.asf")
+default_skeleton = parse_asf("data/default_skeleton.asf")
 
 raw_metadata = pd.read_html('data/mocap-index.html')[5]
 
