@@ -114,14 +114,3 @@ def tensor_to_motion_frames(tensor: torch.Tensor, start_position: list[float], s
 
 # (original_orientations - computed_orientations).abs().max(), (original_positions - computed_positions).abs().max()
 
-
-# def to_target_frame_rate(motion: torch.Tensor, current_frame_rate: int, target_frame_rate, average: bool = False) -> torch.Tensor:
-#     assert current_frame_rate >= target_frame_rate
-#     if current_frame_rate == target_frame_rate:
-#         return motion
-#     factor = current_frame_rate // target_frame_rate
-#     idx = torch.arange(0, len(motion), factor)
-#     if average:
-#         return torch.stack([motion[i: min(len(motion), i + factor)].mean(0)  for i in idx])
-#     else:
-#         return motion[idx]
