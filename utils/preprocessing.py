@@ -1,6 +1,6 @@
 import torch
 from utils.motion import MotionFrame, Motion
-from transforms3d.euler import euler2mat
+from transforms3d.euler import euler2mat, mat2euler
 from data import bone_sequence, default_skeleton
 
 
@@ -77,40 +77,38 @@ def motion_frames_to_tensor(frames: list[MotionFrame]):
 
 
 def tensor_to_motion_frames(tensor: torch.Tensor, start_position: list[float], start_rotation: list[float]) -> list[MotionFrame]:
+    assert len(tensor.shape) == 2
     frames = []
 
+    prev_rotation_mat = torch.tensor(euler2mat(*torch.tensor(start_rotation).deg2rad().tolist()))
+    prev_position = torch.tensor(start_position)
+
+
+    for i in range(tensor.size(0)):
+        frame = {}
+        pose = tensor[i]
+
+        position_change = pose[:3]
+        rotation_change = pose[3:12].view(3, 3)
+
+        current_rotation_mat = rotation_change @ prev_rotation_mat
+        current_position = prev_position + prev_rotation_mat.inverse() @ position_change
+
+        prev_rotation_mat = current_rotation_mat
+        prev_position = current_position
+
+        frame['root'] = current_position.tolist() + torch.tensor(mat2euler(current_rotation_mat.numpy())).rad2deg().tolist()
+        frame['rfingers'] = [7.12502]
+        frame['lfingers'] = [7.12502]
+        frame['rthumb'] = [15.531, -12.8745]
+        frame['lthumb'] = [24.8333, 61.5281]
+
+        for (index, bone) in zip(range(12, len(pose), 9), bone_sequence):
+            rotation = pose[index:index + 9].view(3, 3)
+            euler = torch.tensor(mat2euler(rotation.numpy())).rad2deg().tolist()
+            dof = default_skeleton.bone_map[bone].dof
+            frame[bone] = [euler[axis] for axis in dof]
+
+        frames.append(frame)
+
     return frames
-
-
-# original_orientations = torch.deg2rad(torch.tensor(list(map(lambda frame: frame['root'][3:6], motion_file.frames))))
-# original_positions = torch.tensor(list(map(lambda frame: frame['root'][:3], motion_file.frames)), dtype=torch.float64)
-# computed_orientations = [original_orientations[0]]
-# computed_positions = [original_positions[0]]
-
-# changes = []
-# for (prev_orientation, current_orientation, prev_position, current_position) in zip(original_orientations[:-1], original_orientations[1:], original_positions[:-1], original_positions[1:]):
-#     m1 = torch.tensor(euler2mat(*prev_orientation.tolist()))
-#     m2 = torch.tensor(euler2mat(*current_orientation.tolist()))
-#     orientation_change = m2 @ m1.inverse()
-#     position_change = current_position - prev_position
-#     changes.append((orientation_change, m1 @ position_change))
-
-
-# for (orientation_change, position_change) in changes:
-#     prev_orientation = computed_orientations[-1]
-#     prev_position = computed_positions[-1]
-#     m1 = torch.tensor(euler2mat(*prev_orientation.tolist()))
-#     m2 = orientation_change @ m1
-
-#     computed_positions.append(prev_position + m1.inverse() @ position_change)
-#     computed_orientations.append(torch.tensor(mat2euler(m2.numpy())))
-
-
-# original_orientations = torch.stack([torch.tensor(euler2mat(*orientation.tolist())) for orientation in original_orientations])
-# computed_orientations = torch.stack([torch.tensor(euler2mat(*orientation.tolist())) for orientation in computed_orientations])
-# computed_positions = torch.stack(computed_positions)
-
-# torch.allclose(original_orientations, computed_orientations), torch.allclose(original_positions, computed_positions)
-
-# (original_orientations - computed_orientations).abs().max(), (original_positions - computed_positions).abs().max()
-
