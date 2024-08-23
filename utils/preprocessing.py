@@ -48,64 +48,53 @@ def smooth_motion(raw_motion: Motion, window_size: int) -> Motion:
 
 def motion_frames_to_tensor(frames: list[MotionFrame]):
     data = []
-    for (prev_frame, current_frame) in zip(frames[:-1], frames[1:]):
+    for frame in frames:
         pose = []
-        prev_position = torch.tensor(
-            prev_frame['root'][:3], dtype=torch.float64)
-        current_position = torch.tensor(
-            current_frame['root'][:3], dtype=torch.float64)
-        prev_rotation_mat = torch.tensor(
-            euler2mat(*torch.tensor(prev_frame['root'][3:6]).deg2rad().tolist()))
-        current_rotation_mat = torch.tensor(
-            euler2mat(*torch.tensor(current_frame['root'][3:6]).deg2rad().tolist()))
-        rotation_change_mat = current_rotation_mat @ prev_rotation_mat.inverse()
-        position_change = prev_rotation_mat @ (
-            current_position - prev_position)
+        position = torch.tensor(frame['root'][:3])
+        # pose.append(position.to(torch.float32))
 
-        pose.append(position_change)
-        pose.append(rotation_change_mat.view(-1))
+        # rotation = torch.tensor(frame['root'][3:6])
+        # rotation = rotation.deg2rad()
+
+        # matrix = torch.tensor(euler2mat(*(rotation.tolist())))
+        # pose.append(matrix.view(-1).to(torch.float32))
 
         for bone in bone_sequence:
             rotation = torch.zeros(3)
-            for axis, angle in zip(default_skeleton.bone_map[bone].dof, current_frame[bone]):
+            for axis, angle in zip(default_skeleton.bone_map[bone].dof, frame[bone]):
                 rotation[axis] = angle
             rotation = rotation.deg2rad()
             matrix = torch.tensor(euler2mat(*(rotation.tolist())))
-            pose.append(matrix.view(-1))
+            pose.append(matrix.view(-1).to(torch.float32))
         data.append(torch.cat(pose))
     return torch.stack(data)
 
 
-def tensor_to_motion_frames(tensor: torch.Tensor, start_position: list[float], start_rotation: list[float]) -> list[MotionFrame]:
+def tensor_to_motion_frames(tensor: torch.Tensor) -> list[MotionFrame]:
     assert len(tensor.shape) == 2
     frames = []
 
-    prev_rotation_mat = torch.tensor(euler2mat(*torch.tensor(start_rotation).deg2rad().tolist()))
-    prev_position = torch.tensor(start_position)
-
-
     for i in range(tensor.size(0)):
         frame = {}
+
         pose = tensor[i]
 
-        position_change = pose[:3]
-        rotation_change = pose[3:12].view(3, 3)
+        # position = torch.tensor([0] * 3)
+        # rotation = pose[:9].view(3, 3)
 
-        current_rotation_mat = rotation_change @ prev_rotation_mat
-        current_position = prev_position + prev_rotation_mat.inverse() @ position_change
+        # frame['root'] = position.tolist(
+        # ) + torch.tensor(mat2euler(rotation.numpy())).rad2deg().tolist()
+        frame['root'] = [0] * 6
 
-        prev_rotation_mat = current_rotation_mat
-        prev_position = current_position
-
-        frame['root'] = current_position.tolist() + torch.tensor(mat2euler(current_rotation_mat.numpy())).rad2deg().tolist()
         frame['rfingers'] = [7.12502]
         frame['lfingers'] = [7.12502]
         frame['rthumb'] = [15.531, -12.8745]
         frame['lthumb'] = [24.8333, 61.5281]
 
-        for (index, bone) in zip(range(12, len(pose), 9), bone_sequence):
+        for (index, bone) in zip(range(0, len(pose), 9), bone_sequence):
             rotation = pose[index:index + 9].view(3, 3)
-            euler = torch.tensor(mat2euler(rotation.numpy())).rad2deg().tolist()
+            euler = torch.tensor(
+                mat2euler(rotation.numpy())).rad2deg().tolist()
             dof = default_skeleton.bone_map[bone].dof
             frame[bone] = [euler[axis] for axis in dof]
 

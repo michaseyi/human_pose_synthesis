@@ -30,7 +30,9 @@ class Trainer:
 
         self.early_stopper = EarlyStopping(patience=early_stopper_patience)
 
-        dataset = torch.load(dataset_path, map_location=device)
+        self.data = torch.load(dataset_path, map_location="cpu")
+
+        dataset = self.data['dataset'].to(device)
 
         X, y = dataset[:, :-1], dataset[:, 1:]
 

@@ -5,6 +5,11 @@ from dataclasses import dataclass
 import re
 import os
 
+
+hierarchical_order = ['root', 'lowerback', 'upperback', 'thorax', 'rclavicle', 'rhumerus', 'rradius', 'rwrist', 'rthumb', 'rhand', 'rfingers', 'lclavicle', 'lhumerus', 'lradius', 'lwrist',
+                      'lthumb', 'lhand', 'lfingers', 'lowerneck', 'upperneck', 'head', 'rhipjoint', 'rfemur', 'rtibia', 'rfoot', 'rtoes', 'lhipjoint', 'lfemur', 'ltibia', 'lfoot', 'ltoes']
+
+
 '''
     The bone names commented out are not captured as part of the mocap data
 '''
@@ -41,9 +46,11 @@ bone_sequence = [
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 
-default_skeleton = parse_asf(os.path.join(script_directory, "default_skeleton.asf"))
+default_skeleton = parse_asf(os.path.join(
+    script_directory, "default_skeleton.asf"))
 
-raw_metadata = pd.read_html(os.path.join(script_directory, 'mocap-index.html'))[5]
+raw_metadata = pd.read_html(os.path.join(
+    script_directory, 'mocap-index.html'))[5]
 
 
 @dataclass

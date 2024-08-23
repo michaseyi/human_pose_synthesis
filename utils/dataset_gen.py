@@ -2,12 +2,12 @@ import os
 import torch
 from data import metadata, MotionInfo
 from utils.parser import parse_motion_file
-from utils.preprocessing import downsample_motion, motion_frames_to_tensor
+from utils.preprocessing import downsample_motion, motion_frames_to_tensor, smooth_motion
 
 def is_amc_file(file: str) -> bool:
     return file.endswith('.amc')
 
-def generate_dataset(subjects_dir: str, block_size: int, frame_rate: int):
+def generate_dataset(subjects_dir: str, block_size: int, frame_rate: int, window_size: int = 10):
     dataset = []
     for root, dirs, files in os.walk(subjects_dir):
         subject = str(int(os.path.basename(root))) if os.path.basename(root).isdigit() else root
@@ -27,8 +27,8 @@ def generate_dataset(subjects_dir: str, block_size: int, frame_rate: int):
             motion_data.frame_rate = info.frame_rate
 
             motion_data = downsample_motion(motion_data, frame_rate)
-
-            if len(motion_data.frames) < block_size + 2:
+            motion_data = smooth_motion(motion_data, window_size)
+            if len(motion_data.frames) < block_size + 1:
                 continue
 
             motion_tensor = motion_frames_to_tensor(motion_data.frames)
