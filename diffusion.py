@@ -1,13 +1,15 @@
 import torch
 from torch import nn
 from data import default_skeleton, hierarchical_order
-from transforms3d.euler import euler2mat
 from typing import Optional
 from enum import Enum
 import torch.nn.functional as F
 from dataclasses import dataclass
 from accelerate import Accelerator
 from rotation_conversions import euler_angles_to_matrix, matrix_to_axis_angle, quaternion_to_matrix, matrix_to_quaternion, rotation_6d_to_matrix, matrix_to_rotation_6d
+from torch.utils.data import TensorDataset, DataLoader, random_split
+import os
+import math
 
 
 class RotationType(Enum):
@@ -31,6 +33,10 @@ class Config:
     rotation_type: RotationType = RotationType.ZHOU_6D
     reconstruction_loss_weight: float = 1.0
     context_loss_weight: float = 1.0
+    block_size: int = 60
+    batch_size: int = 64
+    timesteps: int = 300
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 config = Config()
@@ -56,8 +62,8 @@ class ForwardKinematics(nn.Module):
             raise ValueError(f"Invalid rotation type {config.rotation_type}")
 
     def forward(self, x):
-        shape = x.shape
-        x = x.reshape(-1, shape[-1])
+        batch_dim = x.shape[:-1]
+        x = x.reshape(-1, x.size(-1))
 
         rotation_dim = rotation_type_to_dim(config.rotation_type)
         # (B, (3 + rotation_dim * num_joints)) -> (B, 3 * num_joints)
@@ -83,7 +89,7 @@ class ForwardKinematics(nn.Module):
         x = torch.cat([bone_cache[bone][1]
                       for bone in hierarchical_order], dim=1)
 
-        x = x.reshape(*shape[:-1], x.size(-1))
+        x = x.reshape(*batch_dim, x.size(-1))
         return x
 
 
@@ -91,7 +97,7 @@ class Bone(nn.Module):
     def __init__(self, axis, direction, length):
         super().__init__()
         axis = torch.tensor(axis).deg2rad().to(torch.float32)
-        bind = torch.tensor(euler2mat(*axis.tolist())).to(torch.float32)
+        bind = euler_angles_to_matrix(axis, 'XYZ')
         inverse_bind = bind.inverse().to(torch.float32)
         direction = torch.tensor(direction).to(torch.float32)
         length = torch.tensor(length).to(torch.float32)
@@ -129,10 +135,8 @@ class AttentionBlock(nn.Module):
         output_embedding_size: int,
         attention_head_count: int,
         dropout: float,
-        device='cpu'
     ):
         super().__init__()
-        self.device = device
 
         self.ln_1 = nn.LayerNorm(input_embedding_size)
         self.ln_2 = nn.LayerNorm(input_embedding_size)
@@ -146,8 +150,8 @@ class AttentionBlock(nn.Module):
     def forward(self, query: torch.Tensor, key_value: Optional[torch.Tensor] = None, mask=True) -> torch.Tensor:
         length = query.size(1)
 
-        attn_mask = torch.triu(torch.ones(length, length) *
-                               float('-inf'), diagonal=1).to(self.device) if mask else None
+        attn_mask = torch.triu(torch.ones(length, length, device=query.device) *
+                               float('-inf'), diagonal=1) if mask else None
 
         key_value = key_value if key_value is not None else query
 
@@ -226,24 +230,25 @@ class Denoiser(nn.Module):
         cross_attention_layers: int = 12,
         attention_head_count: int = 8,
         input_embedding_size: int = 256,
-        block_size: int = 60,
         feature_size: int = 3 +
             rotation_type_to_dim(config.rotation_type) * config.num_joints,
-        timesteps: int = 300,
+        timesteps: int = config.timesteps,
         dropout: float = 0.1
     ):
         super().__init__()
 
         self.sequential = sequential
 
-        hidden_embedding_size = input_embedding_size * 2
+        hidden_embedding_size = input_embedding_size
+        output_embedding_size = input_embedding_size
+
         if self.sequential:
             self.encoder = Transformer(encoder_layers, input_embedding_size,
-                                       input_embedding_size * 2, input_embedding_size, attention_head_count, dropout)
+                                       hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
             self.decoder = Transformer(decoder_layers, input_embedding_size,
-                                       input_embedding_size * 2, input_embedding_size, attention_head_count, dropout)
+                                       hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
             self.cross_attention = Transformer(cross_attention_layers, input_embedding_size,
-                                               input_embedding_size * 2, input_embedding_size, attention_head_count, dropout)
+                                               hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
         else:
             self.blocks = nn.ModuleList(
                 [CrossAttentionTransformer(1, input_embedding_size, input_embedding_size * 2, input_embedding_size,
@@ -251,7 +256,7 @@ class Denoiser(nn.Module):
             )
 
         self.positional_embedding = nn.Embedding(
-            block_size, input_embedding_size)
+            config.block_size, input_embedding_size)
         self.time_embedding = nn.Embedding(timesteps, input_embedding_size)
         self.feature_embedding = nn.Linear(feature_size, input_embedding_size)
         self.output = nn.Linear(input_embedding_size, feature_size)
@@ -273,7 +278,8 @@ class Denoiser(nn.Module):
         time_embd = self.time_embedding(t).unsqueeze(1)
 
         x_feature_embd = self.feature_embedding(x)
-        x_position_embd = self.positional_embedding(torch.arange(x.size(1)))
+        x_position_embd = self.positional_embedding(
+            torch.arange(x.size(1), device=x.device))
 
         c_feature_embd = self.feature_embedding(c)
         c_position_embd = self.positional_embedding(c_i)
@@ -299,14 +305,61 @@ def forward_kinematics(x: torch.Tensor) -> torch.Tensor:
     return forward_kinematics.block(x)
 
 
+# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
+def linear_beta_schedule(timesteps):
+    """
+    linear schedule, proposed in original ddpm paper
+    """
+    scale = 1000 / timesteps
+    beta_start = scale * 0.0001
+    beta_end = scale * 0.02
+    return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
+
+# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
+
+
+def cosine_beta_schedule(timesteps, s=0.008):
+    """
+    cosine schedule
+    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
+    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
+# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
+
+
+def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
+    """
+    sigmoid schedule
+    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
+    better for images > 64x64, when used during training
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype=torch.float64) / timesteps
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    alphas_cumprod = (-((t * (end - start) + start) /
+                      tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
+
 class Diffusion(nn.Module):
-    def __init__(self, timesteps: int):
+    def __init__(self):
         super().__init__()
-        betas = self.linear_beta_schedule(timesteps)
+        betas = cosine_beta_schedule(config.timesteps).to(torch.float32)
         alphas = 1. - betas
 
         alphas_cumprod = torch.cumprod(alphas, 0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.)
+        posterior_variance = betas * \
+            (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
 
         self.register_buffer("betas", betas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
@@ -314,18 +367,13 @@ class Diffusion(nn.Module):
         self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
         self.register_buffer("sqrt_one_minus_alphas_cumprod",
                              torch.sqrt(1. - alphas_cumprod))
+        self.register_buffer("posterior_variance", posterior_variance)
 
         self.denoiser = Denoiser(sequential=False)
 
     def forward_diffusion_sample(self, x_0, t) -> tuple[torch.Tensor, torch.Tensor]:
         noise = torch.randn_like(x_0)
         return self.extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 + self.extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise, noise
-
-    def linear_beta_schedule(self, timesteps: int):
-        scale = 1000 / timesteps
-        start = scale * 0.0001
-        end = scale * 0.02
-        return torch.linspace(start, end, timesteps)
 
     def extract(self, a, t, x_shape):
         b = t.shape[0]
@@ -336,8 +384,8 @@ class Diffusion(nn.Module):
         '''
         Loss components
             1. Global loss between predicted clean motion and ground truth
-            2. Reconstruction loss between predicted clean motion and noisy motion
-            3. Reconstruction loss between context keypoints and the same keypoints in the predicted clean motion
+            2. Reconstruction loss of joint positions between predicted clean motion and noisy motion
+            3. Reconstruction loss of joint positions between context keypoints and the same keypoints in the predicted clean motion
         '''
         c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
@@ -364,6 +412,45 @@ class Diffusion(nn.Module):
 
         return l_g + l_r * config.reconstruction_loss_weight + l_c * config.context_loss_weight
 
+    @torch.no_grad()
+    def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
+        self.eval()
+
+        batch_size = c.size(0)
+
+        motion = torch.randn(batch_size, config.block_size,
+                             c.size(-1), device=c.device)
+
+        for i in range(config.timesteps)[::-1]:
+            t = torch.full((batch_size,), i, device=c.device)
+            motion = self.sample_timestep(motion, c, c_i, t)
+            motion = motion.clamp(-1.0, 1.0)
+        return motion
+
+    @torch.no_grad()
+    def sample_timestep(self, x_t: torch.Tensor, c: torch.Tensor, c_i: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        clean_motion = self.denoiser(x_t, c, c_i, t)
+        posterior_variance = self.extract(
+            self.posterior_variance, t, x_t.shape)
+        noise = torch.randn_like(x_t, device=x_t.device) * \
+            posterior_variance.sqrt()
+
+        return clean_motion + noise * (t != 0).to(torch.float32).reshape(-1, 1, 1)
+
+    def size(self):
+        count = 0
+        for p in self.parameters():
+            count += p.numel()
+        return count * 4 / 1024 / 1024  # MB
+
+
+class PositionScalar(nn.Module):
+    def __init__(self):
+        ...
+
+    def forward(self):
+        ...
+
 
 class Dataset:
     def __init__(self):
@@ -378,17 +465,174 @@ class Dataset:
         ...
 
 
+class Trainer:
+    def __init__(
+            self,
+            model: nn.Module,
+            dataset_path: str,
+            checkpoint_path: str,
+            lr: float = 3e-4,
+            epochs: int = 5000,
+            batch_size: int = 64,
+            train_test_val_ratio=[0.8, 0.1, 0.1],
+            early_stopper_patience=5,
+    ):
+        torch.manual_seed(22)
+
+        self.epochs = epochs
+        self.epoch = 0
+        self.train_loss: Optional[float] = None
+        self.val_loss: Optional[float] = None
+        self.early_stopper = EarlyStopping(patience=early_stopper_patience)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr)
+        dataset = TensorDataset(torch.load(dataset_path, map_location="cpu"))
+
+        train_dataset, test_dataset, val_dataset = random_split(
+            dataset, train_test_val_ratio)
+
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(
+            test_dataset, batch_size=batch_size, shuffle=False)
+        val_loader = DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False)
+
+        accelerator = Accelerator()
+
+        self.model, self.optimizer, self.train_loader, self.test_loader, self.val_loader = accelerator.prepare(
+            model, optimizer, train_loader, test_loader, val_loader)
+
+        self.checkpoint_path = checkpoint_path
+
+        if os.path.exists(self.checkpoint_path) and os.path.isfile(self.checkpoint_path):
+            print(f"Loading checkpoint from {self.checkpoint_path}:")
+            self.load_checkpoint(self.checkpoint_path)
+            self.log_stat()
+
+    def log_stat(self):
+        print(f"Epoch {
+              self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
+
+    @torch.no_grad()
+    def evaluate_loss(self, data_loader):
+        self.model.eval()
+        total_loss = 0
+        for batch in data_loader:
+            X, y = batch
+            logits = self.model.forward(X)
+            total_loss += self.loss(logits, y).item()
+        self.model.train()
+        return total_loss / len(data_loader)
+
+
+    def train(self):
+        self.model.train()
+        for _ in range(self.epoch, self.epochs):
+            self.epoch += 1
+            total_loss = 0
+            for batch in self.train_loader:
+                X, y = batch
+                logits = self.model.forward(X)
+                loss = self.loss(logits, y)
+                total_loss += loss.item()
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                self.optimizer.step()
+            self.train_loss = total_loss / len(self.train_loader)
+            self.val_loss = self.evaluate_loss(self.val_loader)
+            self.log_stat()
+            self.save_checkpoint(self.checkpoint_path)
+
+            self.early_stopper(self.val_loss)
+            if self.early_stopper.early_stop:
+                print("Early stopping")
+                break
+
+        self.model.eval()
+
+    def loss(self, X: torch.Tensor, y: torch.Tensor):
+        return F.mse_loss(X, y).sqrt()
+
+    def save_checkpoint(self, filename: str):
+        checkpoint = {
+            'epoch': self.epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'train_loss': self.train_loss,
+            'val_loss': self.val_loss
+        }
+        torch.save(checkpoint, filename)
+
+    def load_checkpoint(self, filename: str):
+        checkpoint = torch.load(filename)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epoch = checkpoint['epoch']
+        self.val_loss = checkpoint['val_loss']
+        self.train_loss = checkpoint['train_loss']
+
+
+class EarlyStopping:
+    def __init__(self, patience=5, delta=0):
+        self.patience = patience
+        self.delta = delta
+        self.best_score = None
+        self.early_stop = False
+        self.counter = 0
+        self.best_loss = float('inf')
+
+    def __call__(self, val_loss):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+
+
+class Benchmark:
+    def __init__(self, model, dataset):
+        self.model = model
+        self.dataset = dataset
+
+    def multimodality_score(self, s_l):
+        ...
+
+    def frechet_inception_distance_score(self):
+        ...
+
+    def diversity_score(self, s_d):
+        ...
+
+
 if __name__ == "__main__":
-    diffusion = Diffusion(400)
+    accelerator = Accelerator()
 
-    count = 0
-    for p in diffusion.parameters():
-        count += p.numel()
-    print(f"{count * 4 / 1024 / 1024:.2f} Mb")
+    model = Diffusion()
+    print(f"{model.size()} MB")
 
-    c_i = torch.randint(0, 60, (64, 10,))
-    x = torch.randn(64, 60, 3 + config.num_joints *
-                    rotation_type_to_dim(config.rotation_type))
-    t = torch.randint(0, 300, (64,))
+    model = accelerator.prepare(model)
 
-    print(diffusion.compute_loss(x, c_i, t))
+    context_length = 20
+    batch_size = 1
+    c = torch.randn(batch_size, context_length, 3 + config.num_joints *
+                    rotation_type_to_dim(config.rotation_type)).to(accelerator.device)
+    c_i = torch.randint(batch_size, config.block_size,
+                        (1, context_length,)).to(accelerator.device)
+
+    # batch_size = 1
+    # c_i = torch.randint(0, config.block_size, (batch_size, 10,))
+    # x = torch.randn(batch_size, config.block_size, 3 + config.num_joints *
+    #                 rotation_type_to_dim(config.rotation_type))
+    # c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
+    # t = torch.randint(0, config.timesteps, (batch_size,))
+    # print(diffusion.compute_loss(x, c_i, t))
+
+    motion = model.sample(c, c_i)
+    print(motion.shape, motion.device)
