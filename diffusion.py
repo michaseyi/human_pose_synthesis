@@ -225,7 +225,7 @@ class Denoiser(nn.Module):
         decoder_layers: int = 12,
         cross_attention_layers: int = 12,
         attention_head_count: int = 8,
-        input_embedding_size: int = 176,
+        input_embedding_size: int = 256,
         block_size: int = 60,
         feature_size: int = 3 +
             rotation_type_to_dim(config.rotation_type) * config.num_joints,
@@ -236,6 +236,7 @@ class Denoiser(nn.Module):
 
         self.sequential = sequential
 
+        hidden_embedding_size = input_embedding_size * 2
         if self.sequential:
             self.encoder = Transformer(encoder_layers, input_embedding_size,
                                        input_embedding_size * 2, input_embedding_size, attention_head_count, dropout)
