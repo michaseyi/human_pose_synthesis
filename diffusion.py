@@ -469,7 +469,7 @@ class Trainer:
             train_test_val_ratio=[0.8, 0.1, 0.1],
             early_stopper_patience=5,
     ):
-        torch.manual_seed(22)
+        # torch.manual_seed(22)
 
         self.epochs = epochs
         self.epoch = 0
@@ -538,7 +538,7 @@ class Trainer:
                 x = batch[0]
 
                 c_length = int(torch.randint(
-                    1, config.block_size // 2, (),).item())
+                    5, config.block_size // 2, (),).item())
                 print(c_length)
                 c_i = torch.randint(0, config.block_size,
                                     (x.size(0), c_length,), device=x.device)
