@@ -630,18 +630,21 @@ def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor
     batch = x.shape[:-1]
     x = x.view(-1, 3)
 
-    res = []
+    rotation_dim = rotation_type_to_dim(rotation_type)
 
-    for rotation in x:
+    res = torch.zeros(x.size(0), rotation_dim, dtype=torch.float32)
+
+    for i, rotation in enumerate(x):
         mat = euler_angles_to_matrix(rotation, 'XYZ')
         if rotation_type == RotationType.MATRIX:
-            res.append(mat.view(-1))
+            res[i] = mat.view(-1)
         elif rotation_type == RotationType.ZHOU_6D:
-            res.append(matrix_to_rotation_6d(mat))
+            res[i] = matrix_to_rotation_6d(mat)
         elif rotation_type == RotationType.QUAT:
-            res.append(matrix_to_quaternion(mat))
+            res[i] = matrix_to_quaternion(mat)
+        del mat
 
-    return torch.stack(res).reshape(*batch, -1).to(torch.float32)
+    return res.view(*batch, -1)
 
 
 @torch.no_grad()
