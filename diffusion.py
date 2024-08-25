@@ -630,21 +630,15 @@ def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor
     batch = x.shape[:-1]
     x = x.view(-1, 3)
 
-    rotation_dim = rotation_type_to_dim(rotation_type)
+    mat = euler_angles_to_matrix(x, 'XYZ')
+    if rotation_type == RotationType.MATRIX:
+        mat = mat.view(-1, 9)
+        return mat.view(*batch, -1)
+    elif rotation_type == RotationType.ZHOU_6D:
+        return matrix_to_rotation_6d(mat).view(*batch, -1)
+    elif rotation_type == RotationType.QUAT:
+        return matrix_to_quaternion(mat).view(*batch, -1)
 
-    res = torch.zeros(x.size(0), rotation_dim, dtype=torch.float32)
-
-    for i, rotation in enumerate(x):
-        mat = euler_angles_to_matrix(rotation, 'XYZ')
-        if rotation_type == RotationType.MATRIX:
-            res[i] = mat.view(-1)
-        elif rotation_type == RotationType.ZHOU_6D:
-            res[i] = matrix_to_rotation_6d(mat)
-        elif rotation_type == RotationType.QUAT:
-            res[i] = matrix_to_quaternion(mat)
-        del mat
-
-    return res.view(*batch, -1)
 
 
 @torch.no_grad()
@@ -659,7 +653,7 @@ def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: Rotatio
     del dataset
 
     positions = positions - positions[:, 0].unsqueeze(1)
-    rotations = euler_to_targt(rotations, rotation_type)
+    rotations = euler_to_targt(rotations.to('cuda' if torch.cuda.is_available() else 'cpu'), rotation_type).cpu()
 
     mean, std = positions.mean(dim=(0, 1), keepdim=True), positions.std(
         dim=(0, 1), keepdim=True)
