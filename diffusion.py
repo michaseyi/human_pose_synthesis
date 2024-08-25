@@ -513,7 +513,7 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
-        self.model.eval()
+        # self.model.eval()
         total_loss = 0
         for batch in data_loader:
             x = batch[0]
@@ -525,7 +525,7 @@ class Trainer:
             loss = self.model.compute_loss(
                 x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
             total_loss += loss.item()
-        self.model.train()
+        # self.model.train()
         return total_loss / len(data_loader)
 
     def train(self):
@@ -539,7 +539,7 @@ class Trainer:
                 x = batch[0]
 
                 c_length = int(torch.randint(
-                    6, config.block_size // 2, (),).item())
+                    6, config.block_size // 2, ()).item())
                 c_i = torch.randint(0, config.block_size,
                                     (x.size(0), c_length,), device=x.device)
                 t = torch.randint(0, config.timesteps,
