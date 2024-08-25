@@ -689,8 +689,7 @@ def parse_arguments():
         try:
             return DatasetSource(value)
         except ValueError:
-            raise ArgumentTypeError(f"Invalid dataset source. Choose from {
-                                    [e.value for e in DatasetSource]}")
+            raise ArgumentTypeError(f"Invalid dataset source. Choose from {[e.value for e in DatasetSource]}")
 
     parser.add_argument('--data_source', type=dataset_source, required=True,
                         help='Specify the dataset source (e.g., cmu or hm36)')
