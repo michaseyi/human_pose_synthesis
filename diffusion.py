@@ -717,5 +717,5 @@ if __name__ == "__main__":
         print('Training model')
         model = Diffusion()
         trainer = Trainer(model, args.source_path,
-                          "checkpoint.pth", early_stopper_patience=1000)
+                          "checkpoint.pth", early_stopper_patience=1000, epochs=10000)
         trainer.train()
