@@ -530,6 +530,7 @@ class Trainer:
 
     def train(self):
         self.model.train()
+        print('---- Training')
         for _ in range(self.epoch, self.epochs):
             self.epoch += 1
             total_loss = 0
@@ -539,7 +540,6 @@ class Trainer:
 
                 c_length = int(torch.randint(
                     5, config.block_size // 2, (),).item())
-                print(c_length)
                 c_i = torch.randint(0, config.block_size,
                                     (x.size(0), c_length,), device=x.device)
                 t = torch.randint(0, config.timesteps,
