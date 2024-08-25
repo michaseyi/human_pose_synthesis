@@ -578,7 +578,7 @@ class Trainer:
         torch.save(checkpoint, filename)
 
     def load_checkpoint(self, filename: str):
-        checkpoint = torch.load(filename)
+        checkpoint = torch.load(filename, map_location='cpu')
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.epoch = checkpoint['epoch']
@@ -649,6 +649,7 @@ def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: Rotatio
     print(f'---- Generating dataset from {source_path}')
     # returns global position and euler angles in degrees
     dataset = generate_dataset(source_path, config.block_size, 20)
+    print(dataset.shape)
     positions = dataset[:, :, :3].clone()
     rotations = dataset[:, :, 3:].clone()
 
