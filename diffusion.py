@@ -391,7 +391,6 @@ class Diffusion(nn.Module):
         '''
         c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
-
         x_t, _ = self.forward_diffusion_sample(x, t)
         # predicted clean motion at time t
         x_hat_t = self.denoiser(x_t, c, c_i, t)
@@ -510,8 +509,7 @@ class Trainer:
             self.log_stat()
 
     def log_stat(self):
-        print(f"Epoch {
-              self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
+        print(f"Epoch {self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
@@ -524,7 +522,8 @@ class Trainer:
                                 (x.size(0), c_length,), device=x.device)
             t = torch.randint(0, config.timesteps,
                               (x.size(0),), device=x.device)
-            loss = self.model.compute_loss(x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
+            loss = self.model.compute_loss(
+                x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
             total_loss += loss.item()
         self.model.train()
         return total_loss / len(data_loader)
@@ -546,7 +545,8 @@ class Trainer:
                 t = torch.randint(0, config.timesteps,
                                   (x.size(0),), device=x.device)
 
-                loss = self.model.compute_loss(x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
+                loss = self.model.compute_loss(
+                    x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
                 total_loss += loss.item()
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -626,7 +626,6 @@ class Benchmark:
         ...
 
 
-
 def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor:
     batch = x.shape[:-1]
     x = x.view(-1, 3)
@@ -648,23 +647,28 @@ def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor
 @torch.no_grad()
 def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: RotationType = RotationType.ZHOU_6D):
     print(f'---- Generating dataset from {source_path}')
-    dataset = generate_dataset(source_path, config.block_size, 20) # returns global position and euler angles in degrees
+    # returns global position and euler angles in degrees
+    dataset = generate_dataset(source_path, config.block_size, 20)
     positions = dataset[:, :, :3].clone()
-    rotations = dataset[:,:,3:].clone()
+    rotations = dataset[:, :, 3:].clone()
 
     del dataset
 
     positions = positions - positions[:, 0].unsqueeze(1)
     rotations = euler_to_targt(rotations, rotation_type)
 
-    mean, std = positions.mean(dim=(0, 1), keepdim=True), positions.std(dim=(0, 1), keepdim=True)
+    mean, std = positions.mean(dim=(0, 1), keepdim=True), positions.std(
+        dim=(0, 1), keepdim=True)
     positions = (positions - mean) / std
     dataset = torch.cat([positions, rotations], dim=-1)
 
     print(positions.shape, rotations.shape, dataset.shape)
-    print("position stat", positions.min(), positions.max(), positions.mean(), positions.std())
-    print("rotation stat", rotations.min(), rotations.max(), rotations.mean(), rotations.std())
-    print("dataset stat", dataset.min(), dataset.max(), dataset.mean(), dataset.std())
+    print("position stat", positions.min(), positions.max(),
+          positions.mean(), positions.std())
+    print("rotation stat", rotations.min(), rotations.max(),
+          rotations.mean(), rotations.std())
+    print("dataset stat", dataset.min(),
+          dataset.max(), dataset.mean(), dataset.std())
 
     torch.save({
         'mean': mean,
@@ -672,6 +676,7 @@ def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: Rotatio
         'data': dataset,
         'rotation_type': rotation_type,
     }, target_path)
+
 
 class DatasetSource(Enum):
     CMU = 'cmu'
@@ -706,10 +711,12 @@ if __name__ == "__main__":
     args = parse_arguments()
 
     if args.gen:
-        prepare_cmu_mocap(args.source_path, args.target_path, RotationType(args.rotation))
+        prepare_cmu_mocap(args.source_path, args.target_path,
+                          RotationType(args.rotation))
 
     if args.train:
         print('Training model')
         model = Diffusion()
-        trainer = Trainer(model, args.source_path, "checkpoint.pth", early_stopper_patience=1000)
+        trainer = Trainer(model, args.source_path,
+                          "checkpoint.pth", early_stopper_patience=1000)
         trainer.train()
