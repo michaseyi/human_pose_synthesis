@@ -10,6 +10,8 @@ from rotation_conversions import euler_angles_to_matrix, matrix_to_axis_angle, q
 from torch.utils.data import TensorDataset, DataLoader, random_split
 import os
 import math
+from argparse import ArgumentParser, ArgumentTypeError
+from utils.dataset_gen import generate_dataset
 
 
 class RotationType(Enum):
@@ -302,7 +304,7 @@ class Denoiser(nn.Module):
 def forward_kinematics(x: torch.Tensor) -> torch.Tensor:
     if not hasattr(forward_kinematics, 'block'):
         forward_kinematics.block = ForwardKinematics()
-    return forward_kinematics.block(x)
+    return forward_kinematics.block.to(x.device)(x)
 
 
 # https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
@@ -380,7 +382,7 @@ class Diffusion(nn.Module):
         out = a.gather(-1, t)
         return out.reshape(b, *((1, ) * (len(x_shape) - 1)))
 
-    def compute_loss(self, x: torch.Tensor, c_i: torch.Tensor, t: torch.Tensor):
+    def compute_loss(self, x: torch.Tensor, c_i: torch.Tensor, t: torch.Tensor, p_mean: torch.Tensor, p_std: torch.Tensor):
         '''
         Loss components
             1. Global loss between predicted clean motion and ground truth
@@ -389,9 +391,15 @@ class Diffusion(nn.Module):
         '''
         c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
+
         x_t, _ = self.forward_diffusion_sample(x, t)
         # predicted clean motion at time t
         x_hat_t = self.denoiser(x_t, c, c_i, t)
+
+        x = x.clone()
+
+        x[:, :, :3] = x[:, :, : 3] * p_std + p_mean
+        x_hat_t[:, :, :3] = x_hat_t[:, :, : 3] * p_std + p_mean
 
         # Forward kinematics
         x_f = forward_kinematics(x)
@@ -414,8 +422,6 @@ class Diffusion(nn.Module):
 
     @torch.no_grad()
     def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
-        self.eval()
-
         batch_size = c.size(0)
 
         motion = torch.randn(batch_size, config.block_size,
@@ -424,7 +430,7 @@ class Diffusion(nn.Module):
         for i in range(config.timesteps)[::-1]:
             t = torch.full((batch_size,), i, device=c.device)
             motion = self.sample_timestep(motion, c, c_i, t)
-            motion = motion.clamp(-1.0, 1.0)
+            # motion = motion.clamp(-1.0, 1.0)
         return motion
 
     @torch.no_grad()
@@ -452,19 +458,6 @@ class PositionScalar(nn.Module):
         ...
 
 
-class Dataset:
-    def __init__(self):
-        ...
-
-    @staticmethod
-    def from_cmu() -> 'Dataset':
-        ...
-
-    @staticmethod
-    def from_kit_ml() -> 'Dataset':
-        ...
-
-
 class Trainer:
     def __init__(
             self,
@@ -486,7 +479,12 @@ class Trainer:
         self.early_stopper = EarlyStopping(patience=early_stopper_patience)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr)
-        dataset = TensorDataset(torch.load(dataset_path, map_location="cpu"))
+
+        data = torch.load(dataset_path, map_location="cpu")
+        self.mean = data['mean']
+        self.std = data['std']
+        self.rotation_type = data['rotation_type']
+        dataset = TensorDataset(data['data'])
 
         train_dataset, test_dataset, val_dataset = random_split(
             dataset, train_test_val_ratio)
@@ -502,6 +500,7 @@ class Trainer:
 
         self.model, self.optimizer, self.train_loader, self.test_loader, self.val_loader = accelerator.prepare(
             model, optimizer, train_loader, test_loader, val_loader)
+        self.accelerator = accelerator
 
         self.checkpoint_path = checkpoint_path
 
@@ -515,30 +514,45 @@ class Trainer:
               self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
 
     @torch.no_grad()
-    def evaluate_loss(self, data_loader):
+    def evaluate_loss(self, data_loader: DataLoader):
         self.model.eval()
         total_loss = 0
         for batch in data_loader:
-            X, y = batch
-            logits = self.model.forward(X)
-            total_loss += self.loss(logits, y).item()
+            x = batch[0]
+            c_length = int(torch.randint(1, config.block_size // 3, ()).item())
+            c_i = torch.randint(0, config.block_size,
+                                (x.size(0), c_length,), device=x.device)
+            t = torch.randint(0, config.timesteps,
+                              (x.size(0),), device=x.device)
+            loss = self.model.compute_loss(x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
+            total_loss += loss.item()
         self.model.train()
         return total_loss / len(data_loader)
-
 
     def train(self):
         self.model.train()
         for _ in range(self.epoch, self.epochs):
             self.epoch += 1
             total_loss = 0
+
             for batch in self.train_loader:
-                X, y = batch
-                logits = self.model.forward(X)
-                loss = self.loss(logits, y)
+                x = batch[0]
+
+                c_length = int(torch.randint(
+                    1, config.block_size // 2, (),).item())
+                print(c_length)
+                c_i = torch.randint(0, config.block_size,
+                                    (x.size(0), c_length,), device=x.device)
+                t = torch.randint(0, config.timesteps,
+                                  (x.size(0),), device=x.device)
+
+                loss = self.model.compute_loss(x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
                 total_loss += loss.item()
+
                 self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                self.accelerator.backward(loss)
                 self.optimizer.step()
+
             self.train_loss = total_loss / len(self.train_loader)
             self.val_loss = self.evaluate_loss(self.val_loader)
             self.log_stat()
@@ -551,16 +565,15 @@ class Trainer:
 
         self.model.eval()
 
-    def loss(self, X: torch.Tensor, y: torch.Tensor):
-        return F.mse_loss(X, y).sqrt()
-
     def save_checkpoint(self, filename: str):
         checkpoint = {
             'epoch': self.epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'train_loss': self.train_loss,
-            'val_loss': self.val_loss
+            'val_loss': self.val_loss,
+            'mean': self.mean,
+            'std': self.std,
         }
         torch.save(checkpoint, filename)
 
@@ -571,6 +584,8 @@ class Trainer:
         self.epoch = checkpoint['epoch']
         self.val_loss = checkpoint['val_loss']
         self.train_loss = checkpoint['train_loss']
+        self.mean = checkpoint['mean']
+        self.std = checkpoint['std']
 
 
 class EarlyStopping:
@@ -611,28 +626,90 @@ class Benchmark:
         ...
 
 
+
+def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor:
+    batch = x.shape[:-1]
+    x = x.view(-1, 3)
+
+    res = []
+
+    for rotation in x:
+        mat = euler_angles_to_matrix(rotation, 'XYZ')
+        if rotation_type == RotationType.MATRIX:
+            res.append(mat.view(-1))
+        elif rotation_type == RotationType.ZHOU_6D:
+            res.append(matrix_to_rotation_6d(mat))
+        elif rotation_type == RotationType.QUAT:
+            res.append(matrix_to_quaternion(mat))
+
+    return torch.stack(res).reshape(*batch, -1).to(torch.float32)
+
+
+@torch.no_grad()
+def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: RotationType = RotationType.ZHOU_6D):
+    print(f'---- Generating dataset from {source_path}')
+    dataset = generate_dataset(source_path, config.block_size, 20) # returns global position and euler angles in degrees
+    positions = dataset[:, :, :3].clone()
+    rotations = dataset[:,:,3:].clone()
+
+    del dataset
+
+    positions = positions - positions[:, 0].unsqueeze(1)
+    rotations = euler_to_targt(rotations, rotation_type)
+
+    mean, std = positions.mean(dim=(0, 1), keepdim=True), positions.std(dim=(0, 1), keepdim=True)
+    positions = (positions - mean) / std
+    dataset = torch.cat([positions, rotations], dim=-1)
+
+    print(positions.shape, rotations.shape, dataset.shape)
+    print("position stat", positions.min(), positions.max(), positions.mean(), positions.std())
+    print("rotation stat", rotations.min(), rotations.max(), rotations.mean(), rotations.std())
+    print("dataset stat", dataset.min(), dataset.max(), dataset.mean(), dataset.std())
+
+    torch.save({
+        'mean': mean,
+        'std': std,
+        'data': dataset,
+        'rotation_type': rotation_type,
+    }, target_path)
+
+class DatasetSource(Enum):
+    CMU = 'cmu'
+
+
+def parse_arguments():
+    parser = ArgumentParser()
+
+    def dataset_source(value):
+        try:
+            return DatasetSource(value)
+        except ValueError:
+            raise ArgumentTypeError(f"Invalid dataset source. Choose from {
+                                    [e.value for e in DatasetSource]}")
+
+    parser.add_argument('--data_source', type=dataset_source, required=True,
+                        help='Specify the dataset source (e.g., cmu or hm36)')
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--gen', action='store_true')
+    parser.add_argument('--rotation', type=RotationType,
+                        default=RotationType.ZHOU_6D)
+
+    parser.add_argument('--source_path', type=str,
+                        default='data')
+    parser.add_argument('--target_path', type=str,
+                        default='data.pt')
+    args = parser.parse_args()
+    return args
+
+
 if __name__ == "__main__":
-    accelerator = Accelerator()
+    args = parse_arguments()
 
-    model = Diffusion()
-    print(f"{model.size()} MB")
+    if args.gen:
+        prepare_cmu_mocap(args.source_path, args.target_path, RotationType(args.rotation))
 
-    model = accelerator.prepare(model)
-
-    context_length = 20
-    batch_size = 1
-    c = torch.randn(batch_size, context_length, 3 + config.num_joints *
-                    rotation_type_to_dim(config.rotation_type)).to(accelerator.device)
-    c_i = torch.randint(batch_size, config.block_size,
-                        (1, context_length,)).to(accelerator.device)
-
-    # batch_size = 1
-    # c_i = torch.randint(0, config.block_size, (batch_size, 10,))
-    # x = torch.randn(batch_size, config.block_size, 3 + config.num_joints *
-    #                 rotation_type_to_dim(config.rotation_type))
-    # c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
-    # t = torch.randint(0, config.timesteps, (batch_size,))
-    # print(diffusion.compute_loss(x, c_i, t))
-
-    motion = model.sample(c, c_i)
-    print(motion.shape, motion.device)
+    if args.train:
+        print('Training model')
+        model = Diffusion()
+        trainer = Trainer(model, args.source_path, "checkpoint.pth", early_stopper_patience=1000)
+        trainer.train()
