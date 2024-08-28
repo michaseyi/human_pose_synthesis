@@ -367,6 +367,7 @@ class Diffusion(nn.Module):
             3. Reconstruction loss of joint positions between context keypoints and the same keypoints in the predicted clean motion
             4. Angular velocity loss
             5. Position velocity loss
+            6. Stability loss
         '''
         c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
@@ -403,7 +404,10 @@ class Diffusion(nn.Module):
         x_hat_f_vel = x_hat_f[:, 1:] - x_hat_f[:, :-1]
         l_r_vel = F.mse_loss(x_hat_f_vel, x_f_vel).sqrt()
 
-        return l_g + l_r  + l_c + l_t_vel + l_r_vel
+        # Stability loss
+        l_s = F.mse_loss(x_hat_f[:, 1:], x_hat_f[:, :-1]).sqrt()
+
+        return l_g + l_r  + l_c + l_t_vel + l_r_vel + l_s
 
     @torch.no_grad()
     def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
