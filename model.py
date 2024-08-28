@@ -1,17 +1,14 @@
 import torch
-from torch import nn
-from data import default_skeleton, hierarchical_order
-from typing import Optional
+from torch import Tensor, nn
+from typing import Optional, Tuple
 from enum import Enum
 import torch.nn.functional as F
-from dataclasses import dataclass
 from accelerate import Accelerator
-from rotation_conversions import euler_angles_to_matrix, matrix_to_axis_angle, quaternion_to_matrix, matrix_to_quaternion, rotation_6d_to_matrix, matrix_to_rotation_6d
-from torch.utils.data import TensorDataset, DataLoader, random_split
+from rotation_conversions import axis_angle_to_matrix, axis_angle_to_quaternion, matrix_to_axis_angle, quaternion_to_matrix, rotation_6d_to_matrix, matrix_to_rotation_6d
+from torch.utils.data import TensorDataset, DataLoader
 import os
 import math
-from argparse import ArgumentParser, ArgumentTypeError
-from utils.dataset_gen import generate_dataset
+from pathlib import Path
 
 
 class RotationType(Enum):
@@ -29,100 +26,14 @@ def rotation_type_to_dim(rotation_type: RotationType) -> int:
         return 4
 
 
-@dataclass
-class Config:
-    num_joints: int = len(hierarchical_order)
-    rotation_type: RotationType = RotationType.ZHOU_6D
-    reconstruction_loss_weight: float = 1.0
-    context_loss_weight: float = 1.0
-    block_size: int = 60
-    batch_size: int = 64
-    timesteps: int = 300
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-
-config = Config()
-
-
-class ForwardKinematics(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.bones = nn.ModuleDict({
-            name: Bone(bone.axis, bone.direction, bone.length)
-            for (name, bone) in default_skeleton.bone_map.items()
-            if not name == "root"
-        })
-
-    def get_matrix(self, x: torch.Tensor, i: int) -> torch.Tensor:
-        if config.rotation_type == RotationType.MATRIX:
-            return x[:, i:i + 9].view(-1, 3, 3)
-        elif config.rotation_type == RotationType.ZHOU_6D:
-            return rotation_6d_to_matrix(x[:, i:i + 6])
-        elif config.rotation_type == RotationType.QUAT:
-            return quaternion_to_matrix(x[:, i:i + 4])
-        else:
-            raise ValueError(f"Invalid rotation type {config.rotation_type}")
-
-    def forward(self, x):
-        batch_dim = x.shape[:-1]
-        x = x.reshape(-1, x.size(-1))
-
-        rotation_dim = rotation_type_to_dim(config.rotation_type)
-        # (B, (3 + rotation_dim * num_joints)) -> (B, 3 * num_joints)
-        bone_cache = {}
-
-        i = 0
-        for bone in hierarchical_order:
-            if bone == "root":
-                tail_position = x[:, i:i+3]
-                i += 3
-                global_rotation = self.get_matrix(x, i)
-                i += rotation_dim
-                bone_cache[bone] = (global_rotation, tail_position)
-            else:
-                parent = default_skeleton.bone_map[bone].parent
-                assert parent is not None
-                assert parent.name in bone_cache
-                local_rotation = self.get_matrix(x, i)
-                i += rotation_dim
-                bone_cache[bone] = self.bones[bone](
-                    *bone_cache[parent.name], local_rotation)
-
-        x = torch.cat([bone_cache[bone][1]
-                      for bone in hierarchical_order], dim=1)
-
-        x = x.reshape(*batch_dim, x.size(-1))
-        return x
-
-
-class Bone(nn.Module):
-    def __init__(self, axis, direction, length):
-        super().__init__()
-        axis = torch.tensor(axis).deg2rad().to(torch.float32)
-        bind = euler_angles_to_matrix(axis, 'XYZ')
-        inverse_bind = bind.inverse().to(torch.float32)
-        direction = torch.tensor(direction).to(torch.float32)
-        length = torch.tensor(length).to(torch.float32)
-        self.register_buffer("bind", bind)
-        self.register_buffer("inverse_bind", inverse_bind)
-        self.register_buffer("direction", direction)
-        self.register_buffer("length", length)
-
-    def forward(self, parent_global_transform, parent_tail_position, local_rotation):
-        global_transform = parent_global_transform @ self.bind @ local_rotation @ self.inverse_bind
-        tail_position = parent_tail_position + self.length * \
-            (global_transform @ self.direction)
-        return global_transform, tail_position
-
-
 class FeedFowardBlock(nn.Module):
     def __init__(self, input_embedding_size: int, hidden_embedding_size: int, output_embedding_size: int, dropout: float):
         super().__init__()
         self.mlp = nn.Sequential(
+            nn.Dropout(dropout),
             nn.Linear(input_embedding_size, hidden_embedding_size),
             nn.GELU(),
             nn.Linear(hidden_embedding_size, output_embedding_size),
-            nn.Dropout(dropout),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -226,19 +137,21 @@ class CrossAttentionTransformer(nn.Module):
 class Denoiser(nn.Module):
     def __init__(
         self,
+        num_joints: int,
+        timesteps: int,
+        rotation_type: RotationType,
+        block_size: int,
         sequential: bool = True,
         encoder_layers: int = 12,
         decoder_layers: int = 12,
         cross_attention_layers: int = 12,
         attention_head_count: int = 8,
-        input_embedding_size: int = 256,
-        feature_size: int = 3 +
-            rotation_type_to_dim(config.rotation_type) * config.num_joints,
-        timesteps: int = config.timesteps,
+        input_embedding_size: int = 176,
         dropout: float = 0.1
     ):
         super().__init__()
 
+        feature_size = 3 + num_joints * rotation_type_to_dim(rotation_type)
         self.sequential = sequential
 
         hidden_embedding_size = input_embedding_size
@@ -258,7 +171,7 @@ class Denoiser(nn.Module):
             )
 
         self.positional_embedding = nn.Embedding(
-            config.block_size, input_embedding_size)
+            block_size, input_embedding_size)
         self.time_embedding = nn.Embedding(timesteps, input_embedding_size)
         self.feature_embedding = nn.Linear(feature_size, input_embedding_size)
         self.output = nn.Linear(input_embedding_size, feature_size)
@@ -301,14 +214,8 @@ class Denoiser(nn.Module):
         return x
 
 
-def forward_kinematics(x: torch.Tensor) -> torch.Tensor:
-    if not hasattr(forward_kinematics, 'block'):
-        forward_kinematics.block = ForwardKinematics()
-    return forward_kinematics.block.to(x.device)(x)
-
-
-# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
 def linear_beta_schedule(timesteps):
+    # https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
     """
     linear schedule, proposed in original ddpm paper
     """
@@ -317,10 +224,10 @@ def linear_beta_schedule(timesteps):
     beta_end = scale * 0.02
     return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
 
-# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
 
 
 def cosine_beta_schedule(timesteps, s=0.008):
+# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
     """
     cosine schedule
     as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
@@ -332,10 +239,10 @@ def cosine_beta_schedule(timesteps, s=0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
 
-# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
 
 
 def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
+# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
     """
     sigmoid schedule
     proposed in https://arxiv.org/abs/2212.11972 - Figure 8
@@ -353,9 +260,25 @@ def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
 
 
 class Diffusion(nn.Module):
-    def __init__(self):
+    def __init__(
+        self, 
+        block_size: int,
+        num_joints: int,
+        rotation_type: RotationType,
+        skeleton_path: Path,
+        reconstruction_loss_weight: float = 1.0,
+        context_loss_weight: float = 1.0,
+        timesteps: int = 300, 
+    ):
         super().__init__()
-        betas = cosine_beta_schedule(config.timesteps).to(torch.float32)
+
+        self.block_size = block_size
+        self.reconstruction_loss_weight = reconstruction_loss_weight
+        self.context_loss_weight = context_loss_weight
+        self.rotation_type = rotation_type
+        self.timesteps = timesteps
+
+        betas = linear_beta_schedule(timesteps).to(torch.float32)
         alphas = 1. - betas
 
         alphas_cumprod = torch.cumprod(alphas, 0)
@@ -371,7 +294,16 @@ class Diffusion(nn.Module):
                              torch.sqrt(1. - alphas_cumprod))
         self.register_buffer("posterior_variance", posterior_variance)
 
-        self.denoiser = Denoiser(sequential=False)
+        self.denoiser = Denoiser(num_joints, timesteps, rotation_type, block_size, sequential=False)
+
+        assert skeleton_path.exists()
+
+        skeleton = torch.load(skeleton_path, map_location='cpu')
+
+        self.register_buffer('parents', skeleton['parents'])
+        self.register_buffer('joints', skeleton['joints'])
+
+
 
     def forward_diffusion_sample(self, x_0, t) -> tuple[torch.Tensor, torch.Tensor]:
         noise = torch.randn_like(x_0)
@@ -382,7 +314,7 @@ class Diffusion(nn.Module):
         out = a.gather(-1, t)
         return out.reshape(b, *((1, ) * (len(x_shape) - 1)))
 
-    def compute_loss(self, x: torch.Tensor, c_i: torch.Tensor, t: torch.Tensor, p_mean: torch.Tensor, p_std: torch.Tensor):
+    def compute_loss(self, x: torch.Tensor, c_i: torch.Tensor, t: torch.Tensor):
         '''
         Loss components
             1. Global loss between predicted clean motion and ground truth
@@ -395,14 +327,9 @@ class Diffusion(nn.Module):
         # predicted clean motion at time t
         x_hat_t = self.denoiser(x_t, c, c_i, t)
 
-        x = x.clone()
-
-        x[:, :, :3] = x[:, :, : 3] * p_std + p_mean
-        x_hat_t[:, :, :3] = x_hat_t[:, :, : 3] * p_std + p_mean
-
         # Forward kinematics
-        x_f = forward_kinematics(x)
-        x_hat_f = forward_kinematics(x_hat_t)
+        x_f = self.forward_kinematics(x)
+        x_hat_f = self.forward_kinematics(x_hat_t)
 
         # Global loss
         l_g = F.mse_loss(x_hat_t, x).sqrt()
@@ -410,23 +337,23 @@ class Diffusion(nn.Module):
         # Reconstruction loss
         l_r = F.mse_loss(x_hat_f, x_f).sqrt()
 
-        # Context loss
+        # # Context loss
         l_c = F.mse_loss(
-            x_hat_f.gather(-2, c_i.unsqueeze(-1).expand(-1, -
-                           1, x_hat_f.size(-1))),
-            x_f.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x_f.size(-1)))
+            x_hat_f.gather(1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -
+                           1, *x_hat_f.shape[-2:])),
+            x_f.gather(1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, *x_f.shape[-2:]))
         ).sqrt()
 
-        return l_g + l_r * config.reconstruction_loss_weight + l_c * config.context_loss_weight
+        return l_g + l_r * self.reconstruction_loss_weight + l_c * self.context_loss_weight
 
     @torch.no_grad()
     def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
         batch_size = c.size(0)
 
-        motion = torch.randn(batch_size, config.block_size,
+        motion = torch.randn(batch_size, self.block_size,
                              c.size(-1), device=c.device)
 
-        for i in range(config.timesteps)[::-1]:
+        for i in range(self.timesteps)[::-1]:
             t = torch.full((batch_size,), i, device=c.device)
             motion = self.sample_timestep(motion, c, c_i, t)
             # motion = motion.clamp(-1.0, 1.0)
@@ -447,26 +374,42 @@ class Diffusion(nn.Module):
         for p in self.parameters():
             count += p.numel()
         return count * 4 / 1024 / 1024  # MB
+    
+    def forward_kinematics(self, x):
+        # x -> (b, block_size, feature_length)
+        batch = x.shape[:2] 
+        trans = x[:, :, :3]
+        poses = x[:, :, 3:]
+        poses = poses.reshape(*batch, -1, rotation_type_to_dim(self.rotation_type))
 
+        match self.rotation_type:
+            case RotationType.ZHOU_6D:
+                poses = rotation_6d_to_matrix(poses)
+            case RotationType.QUAT:
+                poses = quaternion_to_matrix(poses)
+            case RotationType.MATRIX:
+                poses = poses.reshape(*poses.shape[:-1], 3, 3)
 
-class PositionScalar(nn.Module):
-    def __init__(self):
-        ...
+        poses = poses.reshape(batch[0] * batch[1], *poses.shape[2:])
 
-    def forward(self):
-        ...
+        positions = batch_rigid_transform(poses, self.joints.unsqueeze(0).repeat(poses.shape[0], 1, 1), self.parents)
+        positions = positions.reshape(*batch, -1, 3)
 
+        return positions + trans.unsqueeze(2)
 
 class Trainer:
     def __init__(
             self,
             model: nn.Module,
-            dataset_path: str,
             checkpoint_path: str,
+            train: TensorDataset,
+            test: TensorDataset,
+            val: TensorDataset,
+            block_size: int,
+            timesteps: int = 300,
             lr: float = 3e-4,
             epochs: int = 5000,
             batch_size: int = 64,
-            train_test_val_ratio=[0.8, 0.1, 0.1],
             early_stopper_patience=5,
     ):
         torch.manual_seed(22)
@@ -476,24 +419,18 @@ class Trainer:
         self.train_loss: Optional[float] = None
         self.val_loss: Optional[float] = None
         self.early_stopper = EarlyStopping(patience=early_stopper_patience)
+        self.block_size = block_size
+        self.timesteps = timesteps
 
         optimizer = torch.optim.AdamW(model.parameters(), lr)
 
-        data = torch.load(dataset_path, map_location="cpu")
-        self.mean = data['mean']
-        self.std = data['std']
-        self.rotation_type = data['rotation_type']
-        dataset = TensorDataset(data['data'])
-
-        train_dataset, test_dataset, val_dataset = random_split(
-            dataset, train_test_val_ratio)
 
         train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True)
+            train, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(
-            test_dataset, batch_size=batch_size, shuffle=False)
+            test, batch_size=batch_size, shuffle=False)
         val_loader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False)
+            val, batch_size=batch_size, shuffle=False)
 
         accelerator = Accelerator()
 
@@ -513,19 +450,18 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
-        # self.model.eval()
+        self.model.eval()
         total_loss = 0
         for batch in data_loader:
             x = batch[0]
-            c_length = int(torch.randint(6, config.block_size // 2, ()).item())
-            c_i = torch.randint(0, config.block_size,
-                                (x.size(0), c_length,), device=x.device)
-            t = torch.randint(0, config.timesteps,
+            c_length = int(torch.randint(1, self.block_size // 2, ()).item())
+            c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[:c_length] for _ in range(x.size(0))])
+            t = torch.randint(0, self.timesteps,
                               (x.size(0),), device=x.device)
             loss = self.model.compute_loss(
-                x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
+                x, c_i, t)
             total_loss += loss.item()
-        # self.model.train()
+        self.model.train()
         return total_loss / len(data_loader)
 
     def train(self):
@@ -537,16 +473,15 @@ class Trainer:
 
             for batch in self.train_loader:
                 x = batch[0]
-
                 c_length = int(torch.randint(
-                    6, config.block_size // 2, ()).item())
-                c_i = torch.randint(0, config.block_size,
-                                    (x.size(0), c_length,), device=x.device)
-                t = torch.randint(0, config.timesteps,
+                    1, self.block_size // 2, ()).item())
+                c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[:c_length] for _ in range(x.size(0))])
+                t = torch.randint(0, self.timesteps,
                                   (x.size(0),), device=x.device)
 
                 loss = self.model.compute_loss(
-                    x, c_i, t, self.mean.to(x.device), self.std.to(x.device))
+                    x, c_i, t)
+                
                 total_loss += loss.item()
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -572,8 +507,6 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'train_loss': self.train_loss,
             'val_loss': self.val_loss,
-            'mean': self.mean,
-            'std': self.std,
         }
         torch.save(checkpoint, filename)
 
@@ -584,9 +517,6 @@ class Trainer:
         self.epoch = checkpoint['epoch']
         self.val_loss = checkpoint['val_loss']
         self.train_loss = checkpoint['train_loss']
-        self.mean = checkpoint['mean']
-        self.std = checkpoint['std']
-
 
 class EarlyStopping:
     def __init__(self, patience=5, delta=0):
@@ -626,94 +556,138 @@ class Benchmark:
         ...
 
 
-def euler_to_targt(x: torch.Tensor, rotation_type: RotationType) -> torch.Tensor:
-    batch = x.shape[:-1]
-    x = x.view(-1, 3)
+def transform_pose_datasets(path: Path, rotation: RotationType) -> Tuple[TensorDataset, TensorDataset, TensorDataset]:
+    train = torch.load(path.joinpath('train.pt'))
+    test = torch.load(path.joinpath('test.pt'))
+    val = torch.load(path.joinpath('val.pt'))
 
-    mat = euler_angles_to_matrix(x, 'XYZ')
-    if rotation_type == RotationType.MATRIX:
-        mat = mat.view(-1, 9)
-        return mat.view(*batch, -1)
-    elif rotation_type == RotationType.ZHOU_6D:
-        return matrix_to_rotation_6d(mat).view(*batch, -1)
-    elif rotation_type == RotationType.QUAT:
-        return matrix_to_quaternion(mat).view(*batch, -1)
+    match rotation:
+        case RotationType.ZHOU_6D:
+            train['poses'] = matrix_to_rotation_6d(
+                axis_angle_to_matrix(train['poses']))
+            val['poses'] = matrix_to_rotation_6d(
+                axis_angle_to_matrix(val['poses']))
+            test['poses'] = matrix_to_rotation_6d(
+                axis_angle_to_matrix(test['poses']))
 
+        case RotationType.QUAT:
+            train['poses'] = axis_angle_to_quaternion(train['poses'])
+            val['poses'] = axis_angle_to_quaternion(val['poses'])
+            test['poses'] = axis_angle_to_quaternion(test['poses'])
 
+        case RotationType.MATRIX:
+            train['poses'] = axis_angle_to_matrix(train['poses'])
+            val['poses'] = axis_angle_to_matrix(val['poses'])
+            test['poses'] = axis_angle_to_matrix(test['poses'])
 
-@torch.no_grad()
-def prepare_cmu_mocap(source_path: str, target_path: str, rotation_type: RotationType = RotationType.ZHOU_6D):
-    print(f'---- Generating dataset from {source_path}')
-    # returns global position and euler angles in degrees
-    dataset = generate_dataset(source_path, config.block_size, 20)
-    print(dataset.shape)
-    positions = dataset[:, :, :3].clone()
-    rotations = dataset[:, :, 3:].clone()
+    return (TensorDataset(torch.cat([train['trans'], train['poses'].view(*train['poses'].shape[:2], -1)], dim=-1)),
+            TensorDataset(torch.cat([test['trans'], test['poses'].view(
+                *test['poses'].shape[:2], -1)], dim=-1)),
+            TensorDataset(torch.cat([val['trans'], val['poses'].view(*val['poses'].shape[:2], -1)], dim=-1)))
 
-    del dataset
-
-    positions = positions - positions[:, 0].unsqueeze(1)
-    rotations = euler_to_targt(rotations.to('cuda' if torch.cuda.is_available() else 'cpu'), rotation_type).cpu()
-
-    mean, std = positions.mean(dim=(0, 1), keepdim=True), positions.std(
-        dim=(0, 1), keepdim=True)
-    positions = (positions - mean) / std
-    dataset = torch.cat([positions, rotations], dim=-1)
-
-    print(positions.shape, rotations.shape, dataset.shape)
-    print("position stat", positions.min(), positions.max(),
-          positions.mean(), positions.std())
-    print("rotation stat", rotations.min(), rotations.max(),
-          rotations.mean(), rotations.std())
-    print("dataset stat", dataset.min(),
-          dataset.max(), dataset.mean(), dataset.std())
-
-    torch.save({
-        'mean': mean,
-        'std': std,
-        'data': dataset,
-        'rotation_type': rotation_type,
-    }, target_path)
+def transform_mat(R: Tensor, t: Tensor) -> Tensor:
+    # https://github.com/nghorbani/amass
+    ''' Creates a batch of transformation matrices
+        Args:
+            - R: Bx3x3 array of a batch of rotation matrices
+            - t: Bx3x1 array of a batch of translation vectors
+        Returns:
+            - T: Bx4x4 Transformation matrix
+    '''
+    # No padding left or right, only add an extra row
+    return torch.cat([F.pad(R, [0, 0, 0, 1]),
+                      F.pad(t, [0, 0, 0, 1], value=1)], dim=2)
 
 
-class DatasetSource(Enum):
-    CMU = 'cmu'
+def batch_rigid_transform(
+    rot_mats: Tensor,
+    joints: Tensor,
+    parents: Tensor,
+    dtype=torch.float32
+) -> Tensor:
+    # https://github.com/nghorbani/amass
+    """
+    Applies a batch of rigid transformations to the joints
 
+    Parameters
+    ----------
+    rot_mats : torch.tensor BxNx3x3
+        Tensor of rotation matrices
+    joints : torch.tensor BxNx3
+        Locations of joints
+    parents : torch.tensor BxN
+        The kinematic tree of each object
+    dtype : torch.dtype, optional:
+        The data type of the created tensors, the default is torch.float32
 
-def parse_arguments():
-    parser = ArgumentParser()
+    Returns
+    -------
+    posed_joints : torch.tensor BxNx3
+        The locations of the joints after applying the pose rotations
+    rel_transforms : torch.tensor BxNx4x4
+        The relative (with respect to the root joint) rigid transformations
+        for all the joints
+    """
 
-    def dataset_source(value):
-        try:
-            return DatasetSource(value)
-        except ValueError:
-            raise ArgumentTypeError(f"Invalid dataset source. Choose from {[e.value for e in DatasetSource]}")
+    joints = torch.unsqueeze(joints, dim=-1)
 
-    parser.add_argument('--data_source', type=dataset_source, required=True,
-                        help='Specify the dataset source (e.g., cmu or hm36)')
-    parser.add_argument('--train', action='store_true')
-    parser.add_argument('--gen', action='store_true')
-    parser.add_argument('--rotation', type=RotationType,
-                        default=RotationType.ZHOU_6D)
+    rel_joints = joints.clone()
+    rel_joints[:, 1:] -= joints[:, parents[1:]]
 
-    parser.add_argument('--source_path', type=str,
-                        default='data')
-    parser.add_argument('--target_path', type=str,
-                        default='data.pt')
-    args = parser.parse_args()
-    return args
+    transforms_mat = transform_mat(
+        rot_mats.reshape(-1, 3, 3),
+        rel_joints.reshape(-1, 3, 1)).reshape(-1, joints.shape[1], 4, 4)
+
+    transform_chain = [transforms_mat[:, 0]]
+    for i in range(1, parents.shape[0]):
+        # Subtract the joint location at the rest pose
+        # No need for rotation, since it's identity when at rest
+        curr_res = torch.matmul(transform_chain[parents[i]],
+                                transforms_mat[:, i])
+        transform_chain.append(curr_res)
+
+    transforms = torch.stack(transform_chain, dim=1)
+
+    # The last column of the transformations contains the posed joints
+    posed_joints = transforms[:, :, :3, 3]
+
+    return posed_joints
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
+    num_joints = 22
+    rotation_type = RotationType.ZHOU_6D 
+    reconstruction_loss_weight = 1.5
+    context_loss_weight = 1.5
+    block_size = 60
+    batch_size = 32
+    feature_length = 135
+    timesteps = 300
 
-    if args.gen:
-        prepare_cmu_mocap(args.source_path, args.target_path,
-                          RotationType(args.rotation))
+    train, test, val = transform_pose_datasets(Path('data_prepared'), rotation=rotation_type)
 
-    if args.train:
-        print('Training model')
-        model = Diffusion()
-        trainer = Trainer(model, args.source_path,
-                          "checkpoint.pth", early_stopper_patience=1000, epochs=10000, batch_size=128)
-        trainer.train()
+    model = Diffusion(block_size, num_joints, rotation_type, Path('skeleton.pt'), timesteps=timesteps)
+
+    trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size, timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
+
+    # trainer.train()
+
+    x = train.tensors[0][1008].to('cuda')
+    c_i = torch.randperm(block_size, device=x.device)[:10]
+    c = x[c_i]
+    # o =  model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
+    o = x.unsqueeze(0)
+    trans = o[:, :, :3]
+    poses = o[:, :, 3:]
+    poses = poses.reshape(*poses.shape[:-1], -1, 6)
+    poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+
+    torch.save(
+        {
+            'trans': trans,
+            'poses': poses,
+        },
+        "prediction.pt"
+    )
+
+    print(trans.shape, poses.shape)

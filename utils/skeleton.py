@@ -153,9 +153,9 @@ def plot_skeleton(skeleton: Skeleton, ax):
     # ax.set_ylim3d(-20, 20)
     # ax.set_zlim3d(-20, 20)
 
-    ax.set_xlim3d(-50, 10)
-    ax.set_ylim3d(-20, 40)
-    ax.set_zlim3d(-20, 40)
+    # ax.set_xlim3d(-50, 10)
+    # ax.set_ylim3d(-20, 40)
+    # ax.set_zlim3d(-20, 40)
 
     lines = get_lines(skeleton)
 

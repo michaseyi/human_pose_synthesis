@@ -8,3 +8,5 @@ viewer
 
 dataset.bin
 checkpoint.pth
+
+data_prepared
