@@ -365,6 +365,8 @@ class Diffusion(nn.Module):
             1. Global loss between predicted clean motion and ground truth
             2. Reconstruction loss of joint positions between predicted clean motion and noisy motion
             3. Reconstruction loss of joint positions between context keypoints and the same keypoints in the predicted clean motion
+            4. Angular velocity loss
+            5. Position velocity loss
         '''
         c = x.gather(-2, c_i.unsqueeze(-1).expand(-1, -1, x.size(-1)))
 
@@ -390,7 +392,18 @@ class Diffusion(nn.Module):
                 1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, *x_f.shape[-2:]))
         ).sqrt()
 
-        return l_g + l_r * self.reconstruction_loss_weight + l_c * self.context_loss_weight
+
+        # Angular Velocity loss
+        x_vel = x[:, 1:] - x[:, :-1]
+        x_hat_t_vel = x_hat_t[:, 1:] - x_hat_t[:, :-1]
+        l_t_vel = F.mse_loss(x_hat_t_vel, x_vel).sqrt()
+
+        # Position Velocity loss
+        x_f_vel = x_f[:, 1:] - x_f[:, :-1]
+        x_hat_f_vel = x_hat_f[:, 1:] - x_hat_f[:, :-1]
+        l_r_vel = F.mse_loss(x_hat_f_vel, x_f_vel).sqrt()
+
+        return l_g + l_r  + l_c + l_t_vel + l_r_vel
 
     @torch.no_grad()
     def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
@@ -729,8 +742,12 @@ if __name__ == "__main__":
 
     trainer.train()
 
-    # x = val.tensors[0][100].to('cuda')
-    # c_i = torch.randperm(block_size, device=x.device)[:40]
+    # x = val.tensors[0][110].to('cuda')
+    # # c_i = torch.randperm(block_size, device=x.device)[:10]
+    # start = torch.arange(0, 1, device=x.device)
+    # end = torch.arange(block_size - 1, block_size, device=x.device)
+    # c_i = torch.cat([start, end], dim=-1)
+    # # c_i = torch.arange(1, 30, device=x.device)
     # c = x[c_i]
 
     # o = model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
