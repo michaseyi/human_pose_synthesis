@@ -30,7 +30,7 @@ class FeedFowardBlock(nn.Module):
     def __init__(self, input_embedding_size: int, hidden_embedding_size: int, output_embedding_size: int, dropout: float):
         super().__init__()
         self.mlp = nn.Sequential(
-            # nn.Dropout(dropout),
+            nn.Dropout(0),
             nn.Linear(input_embedding_size, hidden_embedding_size),
             nn.GELU(),
             nn.Linear(hidden_embedding_size, output_embedding_size),
