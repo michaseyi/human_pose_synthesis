@@ -62,10 +62,12 @@ class EncoderBlock(nn.Module):
 
     def forward(self, query: torch.Tensor) -> torch.Tensor:
         key_value = query
-        x, _ = self.attn(self.ln_1(query), self.ln_1(key_value), self.ln_1(key_value))
+        x, _ = self.attn(self.ln_1(query), self.ln_1(
+            key_value), self.ln_1(key_value))
         x += query
         x = self.mlp(self.ln_2(x)) + x
         return x
+
 
 class DecoderBlock(nn.Module):
     def __init__(
@@ -82,13 +84,12 @@ class DecoderBlock(nn.Module):
         self.ln_2 = nn.LayerNorm(input_embedding_size)
         self.ln_3 = nn.LayerNorm(input_embedding_size)
 
-
         self.self_attn = nn.MultiheadAttention(
             input_embedding_size, attention_head_count, dropout, batch_first=True,)
 
         self.cross_attn = nn.MultiheadAttention(
             input_embedding_size, attention_head_count, dropout, batch_first=True)
-        
+
         self.mlp = FeedFowardBlock(
             input_embedding_size, hidden_embedding_size, output_embedding_size, dropout)
 
@@ -99,10 +100,11 @@ class DecoderBlock(nn.Module):
                                float('-inf'), diagonal=1)
 
         x, _ = self.self_attn(self.ln_1(query), self.ln_1(query),
-                         self.ln_1(query), attn_mask=attn_mask)
+                              self.ln_1(query), attn_mask=attn_mask)
         x = x + query
 
-        x2, _ = self.cross_attn(self.ln_2(x), self.ln_2(key_value), self.ln_2(key_value))
+        x2, _ = self.cross_attn(self.ln_2(x), self.ln_2(
+            key_value), self.ln_2(key_value))
 
         x = x2 + x
 
@@ -146,6 +148,8 @@ class Encoder(nn.Module):
         x = self.norm(x)
 
         return x
+
+
 class Decoder(nn.Module):
     def __init__(
         self,
@@ -173,20 +177,22 @@ class Decoder(nn.Module):
         # Final layer normalization
         self.norm = nn.LayerNorm(input_embedding_size)
 
-        self.projection = nn.Linear(output_embedding_size, output_embedding_size)
+        self.projection = nn.Linear(
+            output_embedding_size, output_embedding_size)
 
     def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
         x = query
 
         for layer in self.layers:
             x = layer(x, key_value)
-        
+
         # Apply the final normalization
         x = self.norm(x)
 
         # Project to vocabulary size
         logits = self.projection(x)
         return logits
+
 
 class Denoiser(nn.Module):
     def __init__(
@@ -210,11 +216,13 @@ class Denoiser(nn.Module):
         hidden_embedding_size = input_embedding_size
         output_embedding_size = input_embedding_size
 
-        
-        self.encoder = Encoder(encoder_layers, input_embedding_size, hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
-        self.decoder = Decoder(decoder_layers, input_embedding_size, hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
-       
-        self.encoder_positional_embedding = nn.Embedding(block_size, input_embedding_size)
+        self.encoder = Encoder(encoder_layers, input_embedding_size, hidden_embedding_size,
+                               output_embedding_size, attention_head_count, dropout)
+        self.decoder = Decoder(decoder_layers, input_embedding_size, hidden_embedding_size,
+                               output_embedding_size, attention_head_count, dropout)
+
+        self.encoder_positional_embedding = nn.Embedding(
+            block_size, input_embedding_size)
 
         self.positional_embedding = nn.Embedding(
             block_size, input_embedding_size)
@@ -249,7 +257,7 @@ class Denoiser(nn.Module):
 
         c = self.encoder(c)
         x = self.decoder(x, c)
-        
+
         x = self.output(x)
         return x
 
@@ -265,9 +273,8 @@ def linear_beta_schedule(timesteps):
     return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
 
 
-
 def cosine_beta_schedule(timesteps, s=0.008):
-# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
+    # https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
     """
     cosine schedule
     as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
@@ -280,9 +287,8 @@ def cosine_beta_schedule(timesteps, s=0.008):
     return torch.clip(betas, 0, 0.999)
 
 
-
 def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
-# https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
+    # https://github.com/lucidrains/denoising-diffusion-pytorch/tree/main
     """
     sigmoid schedule
     proposed in https://arxiv.org/abs/2212.11972 - Figure 8
@@ -301,14 +307,14 @@ def sigmoid_beta_schedule(timesteps, start=-3, end=3, tau=1, clamp_min=1e-5):
 
 class Diffusion(nn.Module):
     def __init__(
-        self, 
+        self,
         block_size: int,
         num_joints: int,
         rotation_type: RotationType,
         skeleton_path: Path,
         reconstruction_loss_weight: float = 1.0,
         context_loss_weight: float = 1.0,
-        timesteps: int = 300, 
+        timesteps: int = 300,
     ):
         super().__init__()
 
@@ -334,7 +340,8 @@ class Diffusion(nn.Module):
                              torch.sqrt(1. - alphas_cumprod))
         self.register_buffer("posterior_variance", posterior_variance)
 
-        self.denoiser = Denoiser(num_joints, timesteps, rotation_type, block_size, sequential=False)
+        self.denoiser = Denoiser(
+            num_joints, timesteps, rotation_type, block_size, sequential=False)
 
         assert skeleton_path.exists()
 
@@ -342,8 +349,6 @@ class Diffusion(nn.Module):
 
         self.register_buffer('parents', skeleton['parents'])
         self.register_buffer('joints', skeleton['joints'])
-
-
 
     def forward_diffusion_sample(self, x_0, t) -> tuple[torch.Tensor, torch.Tensor]:
         noise = torch.randn_like(x_0)
@@ -381,7 +386,8 @@ class Diffusion(nn.Module):
         l_c = F.mse_loss(
             x_hat_f.gather(1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -
                            1, *x_hat_f.shape[-2:])),
-            x_f.gather(1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, *x_f.shape[-2:]))
+            x_f.gather(
+                1, c_i.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, *x_f.shape[-2:]))
         ).sqrt()
 
         return l_g + l_r * self.reconstruction_loss_weight + l_c * self.context_loss_weight
@@ -414,13 +420,14 @@ class Diffusion(nn.Module):
         for p in self.parameters():
             count += p.numel()
         return count * 4 / 1024 / 1024  # MB
-    
+
     def forward_kinematics(self, x):
         # x -> (b, block_size, feature_length)
-        batch = x.shape[:2] 
+        batch = x.shape[:2]
         trans = x[:, :, :3]
         poses = x[:, :, 3:]
-        poses = poses.reshape(*batch, -1, rotation_type_to_dim(self.rotation_type))
+        poses = poses.reshape(
+            *batch, -1, rotation_type_to_dim(self.rotation_type))
 
         match self.rotation_type:
             case RotationType.ZHOU_6D:
@@ -432,10 +439,12 @@ class Diffusion(nn.Module):
 
         poses = poses.reshape(batch[0] * batch[1], *poses.shape[2:])
 
-        positions = batch_rigid_transform(poses, self.joints.unsqueeze(0).repeat(poses.shape[0], 1, 1), self.parents)
+        positions = batch_rigid_transform(poses, self.joints.unsqueeze(
+            0).repeat(poses.shape[0], 1, 1), self.parents)
         positions = positions.reshape(*batch, -1, 3)
 
         return positions + trans.unsqueeze(2)
+
 
 class Trainer:
     def __init__(
@@ -464,7 +473,6 @@ class Trainer:
 
         optimizer = torch.optim.AdamW(model.parameters(), lr)
 
-
         train_loader = DataLoader(
             train, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(
@@ -486,7 +494,8 @@ class Trainer:
             self.log_stat()
 
     def log_stat(self):
-        print(f"Epoch {self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
+        print(f"Epoch {
+              self.epoch}: train loss - {self.train_loss}, val loss - {self.val_loss}")
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
@@ -495,7 +504,8 @@ class Trainer:
         for batch in data_loader:
             x = batch[0]
             c_length = int(torch.randint(1, self.block_size // 2, ()).item())
-            c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[:c_length] for _ in range(x.size(0))])
+            c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[
+                              :c_length] for _ in range(x.size(0))])
             t = torch.randint(0, self.timesteps,
                               (x.size(0),), device=x.device)
             loss = self.model.compute_loss(
@@ -515,13 +525,14 @@ class Trainer:
                 x = batch[0]
                 c_length = int(torch.randint(
                     1, self.block_size // 2, ()).item())
-                c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[:c_length] for _ in range(x.size(0))])
+                c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[
+                                  :c_length] for _ in range(x.size(0))])
                 t = torch.randint(0, self.timesteps,
                                   (x.size(0),), device=x.device)
 
                 loss = self.model.compute_loss(
                     x, c_i, t)
-                
+
                 total_loss += loss.item()
 
                 self.optimizer.zero_grad(set_to_none=True)
@@ -557,6 +568,7 @@ class Trainer:
         self.epoch = checkpoint['epoch']
         self.val_loss = checkpoint['val_loss']
         self.train_loss = checkpoint['train_loss']
+
 
 class EarlyStopping:
     def __init__(self, patience=5, delta=0):
@@ -624,6 +636,7 @@ def transform_pose_datasets(path: Path, rotation: RotationType) -> Tuple[TensorD
             TensorDataset(torch.cat([test['trans'], test['poses'].view(
                 *test['poses'].shape[:2], -1)], dim=-1)),
             TensorDataset(torch.cat([val['trans'], val['poses'].view(*val['poses'].shape[:2], -1)], dim=-1)))
+
 
 def transform_mat(R: Tensor, t: Tensor) -> Tensor:
     # https://github.com/nghorbani/amass
@@ -696,7 +709,7 @@ def batch_rigid_transform(
 
 if __name__ == "__main__":
     num_joints = 22
-    rotation_type = RotationType.ZHOU_6D 
+    rotation_type = RotationType.ZHOU_6D
     reconstruction_loss_weight = 1.5
     context_loss_weight = 1.5
     block_size = 75
@@ -704,32 +717,35 @@ if __name__ == "__main__":
     feature_length = 135
     timesteps = 300
 
-    train, test, val = transform_pose_datasets(Path('data_prepared'), rotation=rotation_type)
+    train, test, val = transform_pose_datasets(
+        Path('data_prepared'), rotation=rotation_type)
 
-    model = Diffusion(block_size, num_joints, rotation_type, Path('skeleton.pt'), timesteps=timesteps)
+    model = Diffusion(block_size, num_joints, rotation_type,
+                      Path('skeleton.pt'), timesteps=timesteps)
 
     print(model.size())
 
-    trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size, timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
+    trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
+                      timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
 
     trainer.train()
 
-    x = val.tensors[0][100].to('cuda')
-    c_i = torch.randperm(block_size, device=x.device)[:40]
-    c = x[c_i]
+    # x = val.tensors[0][100].to('cuda')
+    # c_i = torch.randperm(block_size, device=x.device)[:40]
+    # c = x[c_i]
 
-    o =  model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
-    # o = x.unsqueeze(0)
-    trans = o[:, :, :3]
-    poses = o[:, :, 3:]
-    poses = poses.reshape(*poses.shape[:-1], -1, 6)
-    poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+    # o = model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
+    # # o = x.unsqueeze(0)
+    # trans = o[:, :, :3]
+    # poses = o[:, :, 3:]
+    # poses = poses.reshape(*poses.shape[:-1], -1, 6)
+    # poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
 
-    torch.save(
-        {
-            'trans': trans,
-            'poses': poses,
-        },
-        "prediction.pt"
-    )
-    print(trans.shape, poses.shape)
+    # torch.save(
+    #     {
+    #         'trans': trans,
+    #         'poses': poses,
+    #     },
+    #     "prediction.pt"
+    # )
+    # print(trans.shape, poses.shape)
