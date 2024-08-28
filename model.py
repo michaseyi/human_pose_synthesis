@@ -532,7 +532,7 @@ class Trainer:
 
     def train(self):
         self.model.train()
-        print('----Training')
+        print('---- Training')
         for _ in range(self.epoch, self.epochs):
             self.epoch += 1
             total_loss = 0
