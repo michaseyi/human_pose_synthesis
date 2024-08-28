@@ -30,9 +30,9 @@ class FeedFowardBlock(nn.Module):
     def __init__(self, input_embedding_size: int, hidden_embedding_size: int, output_embedding_size: int, dropout: float):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Dropout(0),
             nn.Linear(input_embedding_size, hidden_embedding_size),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_embedding_size, output_embedding_size),
         )
 
@@ -40,7 +40,7 @@ class FeedFowardBlock(nn.Module):
         return self.mlp(x)
 
 
-class AttentionBlock(nn.Module):
+class EncoderBlock(nn.Module):
     def __init__(
         self,
         input_embedding_size: int,
@@ -60,79 +60,132 @@ class AttentionBlock(nn.Module):
         self.attn = nn.MultiheadAttention(
             input_embedding_size, attention_head_count, dropout, batch_first=True)
 
-    def forward(self, query: torch.Tensor, key_value: Optional[torch.Tensor] = None, mask=True) -> torch.Tensor:
+    def forward(self, query: torch.Tensor) -> torch.Tensor:
+        key_value = query
+        x, _ = self.attn(self.ln_1(query), self.ln_1(key_value), self.ln_1(key_value))
+        x += query
+        x = self.mlp(self.ln_2(x)) + x
+        return x
+
+class DecoderBlock(nn.Module):
+    def __init__(
+        self,
+        input_embedding_size: int,
+        hidden_embedding_size: int,
+        output_embedding_size: int,
+        attention_head_count: int,
+        dropout: float,
+    ):
+        super().__init__()
+
+        self.ln_1 = nn.LayerNorm(input_embedding_size)
+        self.ln_2 = nn.LayerNorm(input_embedding_size)
+        self.ln_3 = nn.LayerNorm(input_embedding_size)
+
+
+        self.self_attn = nn.MultiheadAttention(
+            input_embedding_size, attention_head_count, dropout, batch_first=True,)
+
+        self.cross_attn = nn.MultiheadAttention(
+            input_embedding_size, attention_head_count, dropout, batch_first=True)
+        
+        self.mlp = FeedFowardBlock(
+            input_embedding_size, hidden_embedding_size, output_embedding_size, dropout)
+
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
         length = query.size(1)
 
         attn_mask = torch.triu(torch.ones(length, length, device=query.device) *
-                               float('-inf'), diagonal=1) if mask else None
+                               float('-inf'), diagonal=1)
 
-        key_value = key_value if key_value is not None else query
+        x, _ = self.self_attn(self.ln_1(query), self.ln_1(query),
+                         self.ln_1(query), attn_mask=attn_mask)
+        
+        x2, _ = self.cross_attn(self.ln_2(x), self.ln_2(key_value), self.ln_2(key_value))
 
-        x, _ = self.attn(self.ln_1(query), self.ln_1(key_value),
-                         self.ln_1(key_value), attn_mask=attn_mask)
+        x = x2 + x
 
-        x = self.mlp(self.ln_2(x))
+        x = self.mlp(self.ln_3(x))
 
         return x
 
 
-class Transformer(nn.Module):
+class Encoder(nn.Module):
     def __init__(
         self,
-        number_of_layers: int,
+        num_layers: int,
         input_embedding_size: int,
         hidden_embedding_size: int,
         output_embedding_size: int,
         attention_head_count: int,
-        dropout: float
+        dropout: float,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([AttentionBlock(input_embedding_size,
-                                                    hidden_embedding_size,
-                                                    input_embedding_size,
-                                                    attention_head_count,
-                                                    dropout) for _ in range(number_of_layers)])
 
-        self.ln = nn.LayerNorm(input_embedding_size)
-        self.projection = FeedFowardBlock(
-            input_embedding_size, hidden_embedding_size, output_embedding_size, dropout)
+        # Stack of encoder blocks
+        self.layers = nn.ModuleList([
+            EncoderBlock(
+                input_embedding_size,
+                hidden_embedding_size,
+                output_embedding_size,
+                attention_head_count,
+                dropout,
+            )
+            for _ in range(num_layers)
+        ])
 
-    def forward(self, x: torch.Tensor, encoder_input: Optional[torch.Tensor] = None, mask=True) -> torch.Tensor:
-        x_ = x
+        # Final layer normalization
+        self.norm = nn.LayerNorm(input_embedding_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            x_ = layer(x_, key_value=encoder_input, mask=mask)
+            x = layer(x)
 
-        x_ = self.ln(x_)
-        x_ = x + x_
-        x_ = self.projection(x_)
-        return x_
+        # Apply the final normalization
+        x = self.norm(x)
 
-
-class CrossAttentionTransformer(nn.Module):
+        return x
+class Decoder(nn.Module):
     def __init__(
         self,
-        layers: int,
+        num_layers: int,
         input_embedding_size: int,
         hidden_embedding_size: int,
         output_embedding_size: int,
         attention_head_count: int,
-        dropout: float
+        dropout: float,
     ):
         super().__init__()
 
-        self.encoder = Transformer(layers, input_embedding_size, hidden_embedding_size,
-                                   output_embedding_size, attention_head_count, dropout)
-        self.decoder = Transformer(layers, input_embedding_size, hidden_embedding_size,
-                                   output_embedding_size, attention_head_count, dropout)
-        self.cross_attention = Transformer(
-            layers, input_embedding_size, hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
+        # Stack of decoder blocks
+        self.layers = nn.ModuleList([
+            DecoderBlock(
+                input_embedding_size,
+                hidden_embedding_size,
+                output_embedding_size,
+                attention_head_count,
+                dropout,
+            )
+            for _ in range(num_layers)
+        ])
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        c = self.encoder(c, mask=False)
-        x = self.decoder(x, mask=True)
-        x = self.cross_attention(x, c, mask=False)
-        return x
+        # Final layer normalization
+        self.norm = nn.LayerNorm(input_embedding_size)
 
+        self.projection = nn.Linear(output_embedding_size, output_embedding_size)
+
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
+        x = query
+
+        for layer in self.layers:
+            x = layer(x, key_value)
+        
+        # Apply the final normalization
+        x = self.norm(x)
+
+        # Project to vocabulary size
+        logits = self.projection(x)
+        return logits
 
 class Denoiser(nn.Module):
     def __init__(
@@ -144,7 +197,6 @@ class Denoiser(nn.Module):
         sequential: bool = True,
         encoder_layers: int = 12,
         decoder_layers: int = 12,
-        cross_attention_layers: int = 12,
         attention_head_count: int = 8,
         input_embedding_size: int = 176,
         dropout: float = 0.1
@@ -157,18 +209,11 @@ class Denoiser(nn.Module):
         hidden_embedding_size = input_embedding_size
         output_embedding_size = input_embedding_size
 
-        if self.sequential:
-            self.encoder = Transformer(encoder_layers, input_embedding_size,
-                                       hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
-            self.decoder = Transformer(decoder_layers, input_embedding_size,
-                                       hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
-            self.cross_attention = Transformer(cross_attention_layers, input_embedding_size,
-                                               hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
-        else:
-            self.blocks = nn.ModuleList(
-                [CrossAttentionTransformer(1, input_embedding_size, input_embedding_size * 2, input_embedding_size,
-                                           attention_head_count, dropout) for _ in range(cross_attention_layers)]
-            )
+        
+        self.encoder = Encoder(encoder_layers, input_embedding_size, hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
+        self.decoder = Decoder(decoder_layers, input_embedding_size, hidden_embedding_size, output_embedding_size, attention_head_count, dropout)
+       
+        self.encoder_positional_embedding = nn.Embedding(block_size, input_embedding_size)
 
         self.positional_embedding = nn.Embedding(
             block_size, input_embedding_size)
@@ -197,18 +242,13 @@ class Denoiser(nn.Module):
             torch.arange(x.size(1), device=x.device))
 
         c_feature_embd = self.feature_embedding(c)
-        c_position_embd = self.positional_embedding(c_i)
+        c_position_embd = self.encoder_positional_embedding(c_i)
 
         x = x_feature_embd + x_position_embd + time_embd
         c = c_feature_embd + c_position_embd + time_embd
 
-        if self.sequential:
-            c = self.encoder(c, mask=False)
-            x = self.decoder(x, mask=True)
-            x = self.cross_attention(x, c, mask=False)
-        else:
-            for block in self.blocks:
-                x = block(x, c)
+        c = self.encoder(c)
+        x = self.decoder(x, c)
 
         x = self.output(x)
         return x
@@ -450,7 +490,7 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
-        # self.model.eval()
+        self.model.eval()
         total_loss = 0
         for batch in data_loader:
             x = batch[0]
@@ -461,7 +501,7 @@ class Trainer:
             loss = self.model.compute_loss(
                 x, c_i, t)
             total_loss += loss.item()
-        # self.model.train()
+        self.model.train()
         return total_loss / len(data_loader)
 
     def train(self):
@@ -659,8 +699,8 @@ if __name__ == "__main__":
     rotation_type = RotationType.ZHOU_6D 
     reconstruction_loss_weight = 1.5
     context_loss_weight = 1.5
-    block_size = 60
-    batch_size = 32
+    block_size = 75
+    batch_size = 64
     feature_length = 135
     timesteps = 300
 
@@ -668,26 +708,28 @@ if __name__ == "__main__":
 
     model = Diffusion(block_size, num_joints, rotation_type, Path('skeleton.pt'), timesteps=timesteps)
 
+    print(model.size())
+
     trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size, timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
 
-    # trainer.train()
+    trainer.train()
 
-    x = train.tensors[0][1008].to('cuda')
-    c_i = torch.randperm(block_size, device=x.device)[:10]
-    c = x[c_i]
+    # x = train.tensors[0][1008].to('cuda')
+    # c_i = torch.randperm(block_size, device=x.device)[:30]
+    # c = x[c_i]
     # o =  model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
-    o = x.unsqueeze(0)
-    trans = o[:, :, :3]
-    poses = o[:, :, 3:]
-    poses = poses.reshape(*poses.shape[:-1], -1, 6)
-    poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+    # # o = x.unsqueeze(0)
+    # trans = o[:, :, :3]
+    # poses = o[:, :, 3:]
+    # poses = poses.reshape(*poses.shape[:-1], -1, 6)
+    # poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
 
-    torch.save(
-        {
-            'trans': trans,
-            'poses': poses,
-        },
-        "prediction.pt"
-    )
+    # torch.save(
+    #     {
+    #         'trans': trans,
+    #         'poses': poses,
+    #     },
+    #     "prediction.pt"
+    # )
 
-    print(trans.shape, poses.shape)
+    # print(trans.shape, poses.shape)

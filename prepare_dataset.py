@@ -128,10 +128,10 @@ if __name__ == "__main__":
 
     indir = Path('/home/michaseyi/Downloads/mocap')
     outdir = Path('data_prepared')
-    duration = 6
+    duration = 5
     fps = 15
     chunk_size = fps * duration
-    augment_count = 4
+    augment_count = 2
     stages = [1, 2]
     
     prepare_data(splits, indir, outdir, fps, chunk_size, augment_count, stages)
