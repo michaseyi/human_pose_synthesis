@@ -450,7 +450,7 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate_loss(self, data_loader: DataLoader):
-        self.model.eval()
+        # self.model.eval()
         total_loss = 0
         for batch in data_loader:
             x = batch[0]
@@ -461,7 +461,7 @@ class Trainer:
             loss = self.model.compute_loss(
                 x, c_i, t)
             total_loss += loss.item()
-        self.model.train()
+        # self.model.train()
         return total_loss / len(data_loader)
 
     def train(self):
