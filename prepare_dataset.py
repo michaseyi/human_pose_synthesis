@@ -128,7 +128,7 @@ if __name__ == "__main__":
 
     indir = Path('/home/michaseyi/Downloads/mocap')
     outdir = Path('data_prepared')
-    duration = 5
+    duration = 6
     fps = 15
     chunk_size = fps * duration
     augment_count = 4
