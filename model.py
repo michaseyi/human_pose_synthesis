@@ -202,10 +202,10 @@ class Denoiser(nn.Module):
         rotation_type: RotationType,
         block_size: int,
         sequential: bool = True,
-        encoder_layers: int = 12,
-        decoder_layers: int = 12,
+        encoder_layers: int = 16,
+        decoder_layers: int = 16,
         attention_head_count: int = 8,
-        input_embedding_size: int = 176,
+        input_embedding_size: int = 256,
         dropout: float = 0.1
     ):
         super().__init__()
@@ -407,7 +407,7 @@ class Diffusion(nn.Module):
         # Stability loss
         l_s = F.mse_loss(x_hat_f[:, 1:], x_hat_f[:, :-1]).sqrt()
 
-        return l_g + l_r  + l_c + l_t_vel + l_r_vel + l_s
+        return l_g + l_r  + l_c + l_t_vel + l_r_vel
 
     @torch.no_grad()
     def sample(self, c: torch.Tensor, c_i: torch.Tensor) -> torch.Tensor:
@@ -741,15 +741,15 @@ if __name__ == "__main__":
 
     print(model.size())
 
-    trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
-                      timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
+    # trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
+    #                   timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
 
-    trainer.train()
+    # # trainer.train()
 
     # x = val.tensors[0][110].to('cuda')
     # # c_i = torch.randperm(block_size, device=x.device)[:10]
-    # start = torch.arange(0, 1, device=x.device)
-    # end = torch.arange(block_size - 1, block_size, device=x.device)
+    # start = torch.arange(0, 10, device=x.device)
+    # end = torch.arange(block_size - 10, block_size, device=x.device)
     # c_i = torch.cat([start, end], dim=-1)
     # # c_i = torch.arange(1, 30, device=x.device)
     # c = x[c_i]
