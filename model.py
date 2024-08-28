@@ -100,12 +100,13 @@ class DecoderBlock(nn.Module):
 
         x, _ = self.self_attn(self.ln_1(query), self.ln_1(query),
                          self.ln_1(query), attn_mask=attn_mask)
-        
+        x = x + query
+
         x2, _ = self.cross_attn(self.ln_2(x), self.ln_2(key_value), self.ln_2(key_value))
 
         x = x2 + x
 
-        x = self.mlp(self.ln_3(x))
+        x = self.mlp(self.ln_3(x)) + x
 
         return x
 
@@ -234,7 +235,6 @@ class Denoiser(nn.Module):
 
     def forward(self, x: torch.Tensor, c: torch.Tensor,  c_i: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # x = (b, block_size, feature_length)  c_i = (b, context_length,)   t = (b,)
-
         time_embd = self.time_embedding(t).unsqueeze(1)
 
         x_feature_embd = self.feature_embedding(x)
@@ -249,7 +249,7 @@ class Denoiser(nn.Module):
 
         c = self.encoder(c)
         x = self.decoder(x, c)
-
+        
         x = self.output(x)
         return x
 
@@ -714,22 +714,22 @@ if __name__ == "__main__":
 
     trainer.train()
 
-    # x = train.tensors[0][1008].to('cuda')
-    # c_i = torch.randperm(block_size, device=x.device)[:30]
-    # c = x[c_i]
-    # o =  model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
-    # # o = x.unsqueeze(0)
-    # trans = o[:, :, :3]
-    # poses = o[:, :, 3:]
-    # poses = poses.reshape(*poses.shape[:-1], -1, 6)
-    # poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+    x = val.tensors[0][100].to('cuda')
+    c_i = torch.randperm(block_size, device=x.device)[:40]
+    c = x[c_i]
 
-    # torch.save(
-    #     {
-    #         'trans': trans,
-    #         'poses': poses,
-    #     },
-    #     "prediction.pt"
-    # )
+    o =  model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
+    # o = x.unsqueeze(0)
+    trans = o[:, :, :3]
+    poses = o[:, :, 3:]
+    poses = poses.reshape(*poses.shape[:-1], -1, 6)
+    poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
 
-    # print(trans.shape, poses.shape)
+    torch.save(
+        {
+            'trans': trans,
+            'poses': poses,
+        },
+        "prediction.pt"
+    )
+    print(trans.shape, poses.shape)
