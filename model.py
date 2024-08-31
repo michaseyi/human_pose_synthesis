@@ -202,10 +202,10 @@ class Denoiser(nn.Module):
         rotation_type: RotationType,
         block_size: int,
         sequential: bool = True,
-        encoder_layers: int = 16,
-        decoder_layers: int = 16,
+        encoder_layers: int = 6,
+        decoder_layers: int = 6,
         attention_head_count: int = 8,
-        input_embedding_size: int = 256,
+        input_embedding_size: int = 512,
         dropout: float = 0.1
     ):
         super().__init__()
@@ -213,14 +213,14 @@ class Denoiser(nn.Module):
         feature_size = 3 + num_joints * rotation_type_to_dim(rotation_type)
         self.sequential = sequential
 
-        hidden_embedding_size = input_embedding_size
+        hidden_embedding_size = 2048
         output_embedding_size = input_embedding_size
 
         self.encoder = Encoder(encoder_layers, input_embedding_size, hidden_embedding_size,
                                output_embedding_size, attention_head_count, dropout)
         self.decoder = Decoder(decoder_layers, input_embedding_size, hidden_embedding_size,
                                output_embedding_size, attention_head_count, dropout)
-
+        
         self.encoder_positional_embedding = nn.Embedding(
             block_size, input_embedding_size)
 
@@ -243,11 +243,12 @@ class Denoiser(nn.Module):
 
     def forward(self, x: torch.Tensor, c: torch.Tensor,  c_i: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # x = (b, block_size, feature_length)  c_i = (b, context_length,)   t = (b,)
+
         time_embd = self.time_embedding(t).unsqueeze(1)
 
         x_feature_embd = self.feature_embedding(x)
         x_position_embd = self.positional_embedding(
-            torch.arange(x.size(1), device=x.device))
+            torch.arange(x.size(1), device=x.device) )
 
         c_feature_embd = self.feature_embedding(c)
         c_position_embd = self.encoder_positional_embedding(c_i)
@@ -257,7 +258,6 @@ class Denoiser(nn.Module):
 
         c = self.encoder(c)
         x = self.decoder(x, c)
-
         x = self.output(x)
         return x
 
@@ -741,17 +741,17 @@ if __name__ == "__main__":
 
     print(model.size())
 
-    # trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
-    #                   timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
-
-    # # trainer.train()
-
-    # x = val.tensors[0][110].to('cuda')
-    # # c_i = torch.randperm(block_size, device=x.device)[:10]
-    # start = torch.arange(0, 10, device=x.device)
-    # end = torch.arange(block_size - 10, block_size, device=x.device)
-    # c_i = torch.cat([start, end], dim=-1)
-    # # c_i = torch.arange(1, 30, device=x.device)
+    trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
+                      timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
+    print(trainer.accelerator.device)
+    trainer.train()
+    # # print(trainer.evaluate_loss(trainer.train_loader))
+    # model.eval()
+    # x = train.tensors[0][231].to('cuda')
+    # c_i = torch.randperm(block_size, device=x.device)[:10]
+    # # start = torch.arange(0, 10, device=x.device)
+    # # end = torch.arange(block_size - 10, block_size, device=x.device)
+    # # c_i = torch.cat([start, end], dim=-1)
     # c = x[c_i]
 
     # o = model.sample(c.unsqueeze(0), c_i.unsqueeze(0))

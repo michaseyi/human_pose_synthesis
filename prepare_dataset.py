@@ -6,8 +6,6 @@ import torch
 
 from rotation_conversions import axis_angle_to_matrix,  matrix_to_axis_angle
 
-
-
 def random_vertical_rotations(n: int):
     angles = (torch.rand(n, dtype=torch.float32) * 2 * torch.pi).unsqueeze(1)
     axis = torch.tensor([0, 0, 1], dtype=torch.float32).unsqueeze(0).repeat(n, 1)
@@ -96,7 +94,7 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
 
         torch.save({
             'poses': matrix_to_axis_angle(torch.cat(total_poses)),
-            'trans': torch.cat(total_trans), 
+            'trans': torch.cat(total_trans),
         }, outdir.joinpath(f'train.pt'))
 
 
@@ -114,7 +112,7 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
                 'poses': matrix_to_axis_angle(poses),
                 'trans': trans
             }, outdir.joinpath(f'{split}.pt'))
- 
+
 
 
 
@@ -133,8 +131,5 @@ if __name__ == "__main__":
     chunk_size = fps * duration
     augment_count = 2
     stages = [1, 2]
-    
+
     prepare_data(splits, indir, outdir, fps, chunk_size, augment_count, stages)
-
-
-
