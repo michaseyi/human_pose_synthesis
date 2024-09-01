@@ -531,13 +531,15 @@ class Trainer:
         return total_loss / len(data_loader)
     
     def get_indices(self, max: int, length: int, batch_size: int, device='cpu'):
-        use_sequential = torch.rand(1).item() > 0.5
-
-        if use_sequential:
-            return torch.arange(length, device=device).unsqueeze(0).expand(batch_size, -1)
-        else:
-            return torch.stack([torch.randperm(max, device=device)[
-                            :length] for _ in range(batch_size)])
+        indices = []
+        for _ in range(batch_size):
+            if torch.rand(1).item() > 0.5: 
+                idx = torch.arange(length, device=device)
+            else:
+                idx = torch.randperm(max, device=device)[:length]
+            
+            indices.append(idx)
+        return torch.stack(indices)
 
     def train(self):
         self.model.train()
