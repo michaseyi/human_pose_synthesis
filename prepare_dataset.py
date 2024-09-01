@@ -92,9 +92,19 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
             total_poses.append(poses)
             total_trans.append(trans)
 
+        total_poses = matrix_to_axis_angle(torch.cat(total_poses))
+        total_trans = torch.cat(total_trans)
+
+        idx = torch.randperm(len(total_poses))
+
+        total_poses = total_poses[idx]
+        total_trans = total_trans[idx]
+        
+        print(total_poses.shape)
+
         torch.save({
-            'poses': matrix_to_axis_angle(torch.cat(total_poses)),
-            'trans': torch.cat(total_trans),
+            'poses': total_poses,
+            'trans': total_trans,
         }, outdir.joinpath(f'train.pt'))
 
 
@@ -119,7 +129,7 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
 
 if __name__ == "__main__":
     splits = {
-        'train': ['CMU'],
+        'train': ['CMU', 'DanceDB', 'BMLrub'],
         'val': ['SFU'],
         'test': ['MPI_Limits']
     }

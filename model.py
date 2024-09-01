@@ -1,3 +1,4 @@
+from sympy import get_indices
 import torch
 from torch import Tensor, nn
 from typing import Optional, Tuple
@@ -520,8 +521,7 @@ class Trainer:
         for batch in data_loader:
             x = batch[0]
             c_length = int(torch.randint(1, self.block_size // 2, ()).item())
-            c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[
-                              :c_length] for _ in range(x.size(0))])
+            c_i = self.get_indices(self.block_size, c_length, x.size(0), x.device)
             t = torch.randint(0, self.timesteps,
                               (x.size(0),), device=x.device)
             loss = self.model.compute_loss(
@@ -529,6 +529,15 @@ class Trainer:
             total_loss += loss.item()
         self.model.train()
         return total_loss / len(data_loader)
+    
+    def get_indices(self, max: int, length: int, batch_size: int, device='cpu'):
+        use_sequential = torch.rand(1).item() > 0.5
+
+        if use_sequential:
+            return torch.arange(length, device=device).unsqueeze(0).expand(batch_size, -1)
+        else:
+            return torch.stack([torch.randperm(max, device=device)[
+                            :length] for _ in range(batch_size)])
 
     def train(self):
         self.model.train()
@@ -541,8 +550,8 @@ class Trainer:
                 x = batch[0]
                 c_length = int(torch.randint(
                     1, self.block_size // 2, ()).item())
-                c_i = torch.stack([torch.randperm(self.block_size, device=x.device)[
-                                  :c_length] for _ in range(x.size(0))])
+              
+                c_i = self.get_indices(self.block_size, c_length , x.size(0), x.device)
                 t = torch.randint(0, self.timesteps,
                                   (x.size(0),), device=x.device)
 
@@ -741,17 +750,22 @@ if __name__ == "__main__":
 
     print(model.size())
 
+
     trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
                       timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
-    print(trainer.accelerator.device)
+    # print(trainer.accelerator.device)
+
     trainer.train()
-    # # print(trainer.evaluate_loss(trainer.train_loader))
+    
+    # print(trainer.evaluate_loss(trainer.test_loader))
+    # print(trainer.evaluate_loss(trainer.val_loader))
     # model.eval()
-    # x = train.tensors[0][231].to('cuda')
-    # c_i = torch.randperm(block_size, device=x.device)[:10]
-    # # start = torch.arange(0, 10, device=x.device)
-    # # end = torch.arange(block_size - 10, block_size, device=x.device)
-    # # c_i = torch.cat([start, end], dim=-1)
+    # x = val.tensors[0][126].to('cuda')
+    # # c_i = torch.randperm(block_size, device=x.device)[:15]
+    # start = torch.arange(0, 5, device=x.device)
+    # end = torch.arange(block_size - 5, block_size, device=x.device)
+    # middle = torch.arange(35, 40, device=x.device)
+    # c_i = torch.cat([start, middle, end], dim=-1)
     # c = x[c_i]
 
     # o = model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
