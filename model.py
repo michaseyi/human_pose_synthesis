@@ -95,11 +95,11 @@ class DecoderBlock(nn.Module):
             input_embedding_size, hidden_embedding_size, output_embedding_size, dropout)
 
     def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
-        length = query.size(1)
+        # length = query.size(1)
 
-        attn_mask = torch.triu(torch.ones(length, length, device=query.device) *
-                               float('-inf'), diagonal=1)
-
+        # attn_mask = torch.triu(torch.ones(length, length, device=query.device) *
+        #                        float('-inf'), diagonal=1)
+        attn_mask = None
         x, _ = self.self_attn(self.ln_1(query), self.ln_1(query),
                               self.ln_1(query), attn_mask=attn_mask)
         x = x + query
