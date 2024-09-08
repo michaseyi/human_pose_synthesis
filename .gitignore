@@ -10,3 +10,6 @@ dataset.bin
 checkpoint.pth
 
 data_prepared
+data_prepared2
+feature_extractor.pt
+prediction

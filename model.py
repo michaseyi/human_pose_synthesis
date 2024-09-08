@@ -1,4 +1,3 @@
-from sympy import get_indices
 import torch
 from torch import Tensor, nn
 from typing import Optional, Tuple
@@ -733,6 +732,16 @@ def batch_rigid_transform(
 
     return posed_joints
 
+def get_indices(max: int, length: int, batch_size: int, device='cpu'):
+        indices = []
+        for _ in range(batch_size):
+            if torch.rand(1).item() > 0.5: 
+                idx = torch.arange(length, device=device)
+            else:
+                idx = torch.randperm(max, device=device)[:length]
+            
+            indices.append(idx)
+        return torch.stack(indices)
 
 if __name__ == "__main__":
     num_joints = 22
@@ -748,40 +757,58 @@ if __name__ == "__main__":
         Path('data_prepared'), rotation=rotation_type)
 
     model = Diffusion(block_size, num_joints, rotation_type,
-                      Path('skeleton.pt'), timesteps=timesteps)
-
-    print(model.size())
+                      Path('skeleton.pt'), timesteps=timesteps).to('cuda')
+    
+    
+    checkpoint = torch.load('checkpoint.pth')
+    model.load_state_dict(checkpoint['model_state_dict'])
 
 
     trainer = Trainer(model, "checkpoint.pth", train, test, val, block_size,
                       timesteps=timesteps, batch_size=batch_size, early_stopper_patience=100000)
-    # print(trainer.accelerator.device)
 
     trainer.train()
+
+    #inferencing
+    model.eval()
+    torch.seed()
     
-    # print(trainer.evaluate_loss(trainer.test_loader))
-    # print(trainer.evaluate_loss(trainer.val_loader))
-    # model.eval()
-    # x = val.tensors[0][126].to('cuda')
-    # # c_i = torch.randperm(block_size, device=x.device)[:15]
-    # start = torch.arange(0, 5, device=x.device)
+    data = torch.load('data_prepared/DanceDB.pt')
+    size = 10
+    source="dancedb"
+    data['poses'] = matrix_to_rotation_6d(axis_angle_to_matrix(data['poses']))
+    data = torch.cat([data['trans'], data['poses'].reshape(*data['trans'].shape[:2], 22 * 6)], dim=-1).to('cuda')
+
+    # x = train.tensors[0][index].to('cuda')
+    # c_i = torch.randperm(block_size, device='cuda')[:15]
+    c_i = get_indices(batch_size, size, min(200, len(data)), 'cuda')
+    # start = torch.arange(30, 50, device=x.device)
     # end = torch.arange(block_size - 5, block_size, device=x.device)
     # middle = torch.arange(35, 40, device=x.device)
-    # c_i = torch.cat([start, middle, end], dim=-1)
-    # c = x[c_i]
+    # c_i = torch.cat([start], dim=-1)
+    perm = torch.randperm(len(data))
+    c = data[perm].gather(1, c_i.unsqueeze(-1).expand(-1, -1, 135))
+    # c = data[c_i]
 
-    # o = model.sample(c.unsqueeze(0), c_i.unsqueeze(0))
-    # # o = x.unsqueeze(0)
-    # trans = o[:, :, :3]
-    # poses = o[:, :, 3:]
-    # poses = poses.reshape(*poses.shape[:-1], -1, 6)
-    # poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+    out = []
 
-    # torch.save(
-    #     {
-    #         'trans': trans,
-    #         'poses': poses,
-    #     },
-    #     "prediction.pt"
-    # )
-    # print(trans.shape, poses.shape)
+    for i in range(10):
+        o = model.sample(c, c_i)
+        out.append(o)
+
+    o = torch.cat(out, dim=0)
+
+    trans = o[:, :, :3]
+    poses = o[:, :, 3:]
+    poses = poses.reshape(*poses.shape[:-1], -1, 6)
+    poses = matrix_to_axis_angle(rotation_6d_to_matrix(poses))
+
+    torch.save(
+        {
+            'indices': c_i,
+            'trans': trans,
+            'poses': poses,
+        },
+        f"prediction_{source}_{size}.pt"
+    )
+    print(trans.shape, poses.shape)

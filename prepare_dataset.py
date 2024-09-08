@@ -76,18 +76,18 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
         total_poses = []
         total_trans = []
         for i in range(augment_count):
-            train_data = torch.load(outdir.joinpath('train.pt'))
+            train_data = torch.load(outdir.joinpath('train-test-val.pt'))
 
             poses = train_data['poses']
             trans = train_data['trans']
 
-            rotations = random_vertical_rotations(poses.shape[0]).unsqueeze(1)
+            # rotations = random_vertical_rotations(poses.shape[0]).unsqueeze(1)
 
-            root_orients = poses[:, :, 0, :, :]
+            # root_orients = poses[:, :, 0, :, :]
 
-            root_orients[:] = rotations @ root_orients
+            # root_orients[:] = rotations @ root_orients
 
-            trans = (rotations @ trans.unsqueeze(-1)).squeeze(-1)
+            # trans = (rotations @ trans.unsqueeze(-1)).squeeze(-1)
 
             total_poses.append(poses)
             total_trans.append(trans)
@@ -105,13 +105,14 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
         torch.save({
             'poses': total_poses,
             'trans': total_trans,
-        }, outdir.joinpath(f'train.pt'))
+        }, outdir.joinpath(f'train-test-val.pt'))
 
 
         del total_poses
         del total_trans
 
-        for split in ['val', 'test']:
+        # for split in ['CMU', 'BLMrub', 'DanceDB', 'SFU', 'MPI_Limits']:
+        for split in ['DanceDB']:
             split_data = torch.load(outdir.joinpath(f'{split}.pt'))
 
             poses = split_data['poses']
@@ -129,9 +130,12 @@ def prepare_data(splits, indir: Path, outdir: Path, fps: int, chunk_size: int, a
 
 if __name__ == "__main__":
     splits = {
-        'train': ['CMU', 'DanceDB', 'BMLrub'],
-        'val': ['SFU'],
-        'test': ['MPI_Limits']
+        'CMU': ['CMU'],
+        'BLMrub': ['BMLrub'],
+        'DanceDB': ['DanceDB'],
+        'SFU': ['SFU'],
+        'MPI_Limits': ['MPI_Limits'],
+        'train-test-val': ['CMU', 'BLMrub', 'DanceDB']
     }
 
     indir = Path('/home/michaseyi/Downloads/mocap')
